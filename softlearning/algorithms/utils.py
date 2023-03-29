@@ -23,10 +23,18 @@ def create_RAMBO_algorithm(variant, *args, **kwargs):
 
     return algorithm
 
+def create_RAIL_algorithm(variant, *args, **kwargs):
+    from rambo.algorithms.rail import RAIL
+
+    algorithm = RAIL(config=variant, *args, **kwargs)
+
+    return algorithm
+
 ALGORITHM_CLASSES = {
     'SAC': create_SAC_algorithm,
     'SQL': create_SQL_algorithm,
-    'RAMBO': create_RAMBO_algorithm
+    'RAMBO': create_RAMBO_algorithm,
+    'RAIL': create_RAIL_algorithm,
 }
 
 
