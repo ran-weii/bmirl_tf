@@ -86,6 +86,7 @@ class RAMBO(RLAlgorithm):
             pretrain_bc=False,
             bc_lr=1e-4,
             bc_epochs=50,
+            dynamics_pretrain_epochs=500,
 
             deterministic=False,
             rollout_random=False,
@@ -105,6 +106,7 @@ class RAMBO(RLAlgorithm):
             pool_load_path='',
             model_name=None,
             model_load_dir=None,
+            checkpoint_load_dir=None,
             **kwargs,
     ):
         super(RAMBO, self).__init__(**kwargs)
@@ -154,7 +156,10 @@ class RAMBO(RLAlgorithm):
         else:
             self._train_adversarial = train_adversarial
 
-        self._log_dir = log_dir
+        self._log_dir = os.path.join(log_dir, "{}-{}".format(
+            config["environment_params"]["training"]["domain"],
+            config["environment_params"]["training"]["task"]
+        ))
         self._writer = Writer(self._log_dir, log_wandb, wandb_project, wandb_group, config)
         print('[ RAMBO ] WANDB Group: {}'.format(wandb_group))
 
@@ -175,6 +180,7 @@ class RAMBO(RLAlgorithm):
         self._bc_lr = bc_lr
         self._bc_epochs = bc_epochs
         self._do_bc = pretrain_bc
+        self.dynamics_pretrain_epochs = dynamics_pretrain_epochs
 
         self._reward_scale = reward_scale
         self._target_entropy = (
@@ -198,7 +204,10 @@ class RAMBO(RLAlgorithm):
         self._observation_shape = observation_shape
         assert len(action_shape) == 1, action_shape
         self._action_shape = action_shape
-
+        
+        self._checkpoint_load_dir = checkpoint_load_dir
+        if checkpoint_load_dir is not None:
+            self._load_checkpoint()
         self._build()
         self._state_samples = None
         self._batch_for_testing = None
@@ -267,7 +276,7 @@ class RAMBO(RLAlgorithm):
             self._epoch, self._model_train_freq, self._timestep, self._total_timestep)
         )
 
-        max_epochs = 1 if self._model.model_loaded else None
+        max_epochs = 1 if self._model.model_loaded else self.dynamics_pretrain_epochs
         model_train_metrics = self._train_model(
             batch_size=256,
             max_epochs=max_epochs,
@@ -383,6 +392,7 @@ class RAMBO(RLAlgorithm):
                 diagnostics.update({'model/current_val_loss_avg': current_losses.mean()})
 
                 self._writer.add_dict(diagnostics, self._epoch)
+                self._save_checkpoint()
 
                 for item in diagnostics.items():
                     print(item)
@@ -460,7 +470,28 @@ class RAMBO(RLAlgorithm):
             self._save_path = os.path.join(self._log_dir, 'models')
             filesystem.mkdir(self._save_path)
             print('[ RAMBO ] Saving model to: {}'.format(self._save_path))
-            self._model.save(self._save_path, self._total_timestep)
+            self._model.save(self._save_path, "BNN_pretrain")
+    
+    def _save_checkpoint(self):
+        save_path = os.path.join(self._log_dir, 'models')
+        filesystem.mkdir(save_path)
+        policy_weights = self._policy.get_weights()
+        q_weights = [Q.get_weights() for Q in self._Qs]
+        data = {'policy_weights': policy_weights, 'q_weights': q_weights}
+        full_path = os.path.join(save_path, 'checkpoint.pkl')
+        print('Saving checkpoint to: {}'.format(full_path))
+        pickle.dump(data, open(full_path, 'wb'))
+        self._model.save(save_path, "BNN")
+
+    def _load_checkpoint(self):
+        save_path = os.path.join(self._checkpoint_load_dir, 'models')
+        full_path = os.path.join(save_path, 'checkpoint.pkl')
+        print('loading checkpoint from: {}'.format(full_path))
+        data = pickle.load(open(full_path, 'rb'))
+        self._policy.set_weights(data["policy_weights"])
+        for Q, weight in zip(self._Qs, data["q_weights"]):
+            Q.set_weights(weight)
+        self._model.load_params(os.path.join(save_path, "BNN"))
 
     def _set_rollout_length(self):
         min_epoch, max_epoch, min_length, max_length = self._rollout_schedule

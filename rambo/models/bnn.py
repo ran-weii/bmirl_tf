@@ -274,12 +274,13 @@ class BNN:
 
         # Load model if needed
         if self.model_loaded:
-            self.load_params()
+            self.load_params(self.model_dir)
         self.finalized = True
 
-    def load_params(self):
+    def load_params(self, model_dir):
+        print("loading BNN parameters from: {}".format(model_dir + ".mat"))
         with self.sess.as_default():
-            params_dict = loadmat(os.path.join(self.model_dir, "%s.mat" % self.name))
+            params_dict = loadmat(model_dir + ".mat")
             all_vars = self.nonoptvars + self.optvars
             for i, var in enumerate(all_vars):
                 var.load(params_dict[str(i)])
@@ -578,7 +579,7 @@ class BNN:
             return mean, variance
         return factored_mean, factored_variance
 
-    def save(self, savedir, timestep):
+    def save(self, savedir, name):
         """Saves all information required to recreate this model in two files in savedir
         (or self.model_dir if savedir is None), one containing the model structuure and the other
         containing all variables in the network.
@@ -592,7 +593,7 @@ class BNN:
 
         # Write structure to file
         if not self.separate_mean_var:
-            with open(os.path.join(model_dir, '{}_{}.nns'.format(self.name, timestep)), "w+") as f:
+            with open(os.path.join(model_dir, '{}_{}.nns'.format(self.name, name)), "w+") as f:
                 for layer in self.layers[:-1]:
                     f.write("%s\n" % repr(layer))
                     last_layer_copy = self.layers[-1].copy()
@@ -600,10 +601,10 @@ class BNN:
                     last_layer_copy.set_output_dim(last_layer_copy.get_output_dim() // 2)
                     f.write("%s\n" % repr(last_layer_copy))
         else:
-            with open(os.path.join(model_dir, '{}_{}.nns'.format(self.name, timestep)), "w+") as f:
+            with open(os.path.join(model_dir, '{}.nns'.format(name)), "w+") as f:
                 for layer in self.layers:
                     f.write("%s\n" % repr(layer))
-            with open(os.path.join(model_dir, '{}_{}_var.nns'.format(self.name, timestep)), "w+") as f:
+            with open(os.path.join(model_dir, '{}_var.nns'.format(name)), "w+") as f:
                 for layer in self.var_layers:
                     f.write("%s\n" % repr(layer))
 
@@ -611,14 +612,15 @@ class BNN:
         var_vals = {}
         for i, var_val in enumerate(self.sess.run(self.nonoptvars + self.optvars)):
             var_vals[str(i)] = var_val
-        savemat(os.path.join(model_dir, '{}_{}.mat'.format(self.name, timestep)), var_vals)
+        savemat(os.path.join(model_dir, '{}.mat'.format(name)), var_vals)
 
-    def _load_structure(self):
+    def _load_structure(self, model_path):
         """Uses the saved structure in self.model_dir with the name of this network to initialize
         the structure of this network.
         """
+        print("loading BNN structure")
         structure = []
-        with open(os.path.join(self.model_dir, "%s.nns" % self.name), "r") as f:
+        with open(self.model_dir + ".nns", "r") as f:
             for line in f:
                 kwargs = {
                     key: val for (key, val) in
@@ -632,7 +634,7 @@ class BNN:
                 structure.append(FC(**kwargs))
         self.layers = structure
         if self.separate_mean_var:
-            with open(os.path.join(self.model_dir, "%s_var.nns" % self.name), "r") as f:
+            with open(self.model_dir + "_var.nns", "r") as f:
                 for line in f:
                     kwargs = {
                         key: val for (key, val) in

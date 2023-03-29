@@ -11,6 +11,7 @@ base_params = {
         'train_every_n_steps': 1,
         'n_train_repeat': 1,
         'eval_render_mode': None,
+        'evaluate_interval': 1,
         'eval_n_episodes': 10,
         'eval_deterministic': True,
         'separate_mean_var': True,
@@ -31,6 +32,11 @@ base_params = {
         'num_networks': 7,
         'num_elites': 5,
         'max_model_t': None,
-        'pretrain_bc': True
+        'pretrain_bc': False,
+        'dynamics_pretrain_epochs': 500,
+        # enter None or model path without extension: /Users/hfml/Documents/Ran/rambo/logs/hopper-medium-expert-v2/models
+        'model_load_dir': None,
+        # enter None or checkpoint path up to task name: /Users/hfml/Documents/Ran/rambo/logs/hopper-medium-expert-v2
+        'checkpoint_load_dir': None,
     }
 }

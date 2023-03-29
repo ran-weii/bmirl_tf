@@ -1,26 +1,29 @@
+import os
 import io
+import datetime
 import numpy as np
+import pandas as pd
 import cv2
 import pdb
-import wandb
 import matplotlib
 matplotlib.use('Agg')
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-import tensorboardX as tbx
+from softlearning.misc.utils import _make_dir
 
 class Writer():
 
     def __init__(self, log_dir, log_wandb, wandb_project="", wandb_group="", config=None):
         self.log_dir = log_dir
-        self._writer = tbx.SummaryWriter(self.log_dir)
         self._data = {}
         self._data_3d = {}
-        self._wandb_run = None
-        if log_wandb:
-            self._wandb_run = wandb.init(project=wandb_project, group=wandb_group, config=config)
+        
+        _make_dir(log_dir)
+        date_time = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
+        self.csv_dir = os.path.join(log_dir, f"history_{date_time}.csv")
+        self.history = []
         print('[ Writer ] Log dir: {}'.format(log_dir))
 
     def __getitem__(self, key):
@@ -40,13 +43,10 @@ class Writer():
         self._add_label(self._data, label)
         if epoch > self._data[label]:
             self._data[label] = epoch
-            self._writer.add_scalar(label, val, epoch)
-            if self._wandb_run is not None:
-                wandb.log({label: val}, step=epoch)
 
     def add_dict(self, dictionary, epoch):
-        if self._wandb_run is not None:
-            wandb.log(dictionary, step=epoch)
+        self.history.append(dictionary.copy())
+        pd.DataFrame(self.history).to_csv(self.csv_dir, index=False)
 
     def plot_cdfs(self, label, epoch, env_mean, model_mean, env_paths, model_paths):
         plt.clf()
