@@ -28,10 +28,15 @@ import rambo.utils.filesystem as filesystem
 import rambo.off_policy.loader as loader
 
 
-def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model):
+def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, obs_mean, obs_std):
+    if obs_mean is not None and obs_std is not None:
+        observation_ = (observation - obs_mean) / (obs_std + 1e-6)
+    else:
+        observation_ = observation
+
     rwd = tf.clip_by_value(
         rwd_model([
-        observation * (1 - terminated), 
+        observation_ * (1 - terminated), 
         action * (1 - terminated),
         terminated,
         ]),
@@ -115,6 +120,7 @@ class RAIL(RLAlgorithm):
             identity_terminal=0,
 
             pool_load_path='',
+            expert_load_path='',
             model_name=None,
             model_load_dir=None,
             checkpoint_load_dir=None,
@@ -201,7 +207,7 @@ class RAIL(RLAlgorithm):
         self._Qs = Qs
         self._Q_targets = tuple(tf.keras.models.clone_model(Q) for Q in Qs)
 
-        self._pool = pool
+        self._pool = pool # trajectory pool
         self._plotter = plotter
         self._tf_summaries = tf_summaries
 
@@ -235,13 +241,6 @@ class RAIL(RLAlgorithm):
         self._observation_shape = observation_shape
         assert len(action_shape) == 1, action_shape
         self._action_shape = action_shape
-        
-        self._checkpoint_load_dir = checkpoint_load_dir
-        if checkpoint_load_dir is not None:
-            self._load_checkpoint()
-        self._build()
-        self._state_samples = None
-        self._batch_for_testing = None
 
         #### load replay pool data
         self._pool_load_path = pool_load_path
@@ -266,11 +265,34 @@ class RAIL(RLAlgorithm):
         self.fake_env = FakeEnv(self._model, self._static_fns, penalty_coeff=0,
                                 obs_mean=self._obs_mean, obs_std=self._obs_std)
         
+        # additional pools
+        self._expert_load_path = expert_load_path
+        self._expert_pool = SimpleReplayPool(
+            self._pool._observation_space,
+            self._pool._action_space,
+            2e6
+        )
+        loader.restore_pool(
+            self._expert_pool,
+            self._expert_load_path,
+            save_path=self._log_dir,
+            normalize_states=False,
+            normalize_rewards=False
+        )
+        
+        # pool for storing reward rollout samples
         self._reward_pool = SimpleReplayPool(
             self._pool._observation_space,
             self._pool._action_space,
             self._rwd_steps * self.sampler._batch_size * self._model_retain_epochs
         )
+        
+        self._checkpoint_load_dir = checkpoint_load_dir
+        if checkpoint_load_dir is not None:
+            self._load_checkpoint()
+        self._build()
+        self._state_samples = None
+        self._batch_for_testing = None
 
     def _build(self):
         self._training_ops = {}
@@ -475,7 +497,7 @@ class RAIL(RLAlgorithm):
     def _train_reward(self):
         rwd_loss_epoch = []
         for i in range(self._rwd_steps):
-            real_batch = self.sampler.random_batch(int(self.sampler._batch_size/2))
+            real_batch = self._expert_pool.random_batch(int(self.sampler._batch_size/2))
             fake_batch = self._reward_pool.random_batch(int(self.sampler._batch_size/2))
             feed_dict = {
                 self._observations_ph: real_batch["observations"],
@@ -858,7 +880,9 @@ class RAIL(RLAlgorithm):
             self._actions_ph,
             self._terminals_ph,
             self._rwd_clip_max,
-            self._reward
+            self._reward,
+            self._obs_mean,
+            self._obs_std
         ))
         next_actions = self._policy.actions([self._next_observations_ph])
         next_log_pis = self._policy.log_pis(
@@ -1029,14 +1053,18 @@ class RAIL(RLAlgorithm):
             self._actions_ph,
             self._terminals_ph,
             self._rwd_clip_max,
-            self._reward
+            self._reward,
+            self._obs_mean,
+            self._obs_std
         )
         fake_rwd = self._fake_rwd = compute_reward(
             self._fake_observations_ph, 
             self._fake_actions_ph,
             self._fake_terminals_ph,
             self._rwd_clip_max,
-            self._reward
+            self._reward,
+            self._obs_mean,
+            self._obs_std
         )
         reward_loss = -(tf.reduce_mean(real_rwd, axis=0) - tf.reduce_mean(fake_rwd, axis=0))
 
@@ -1136,7 +1164,9 @@ class RAIL(RLAlgorithm):
             self._actions_ph,
             done_mask,
             self._rwd_clip_max,
-            self._reward
+            self._reward,
+            self._obs_mean,
+            self._obs_std
         )) # reward edit
         value = self._value = tf.stop_gradient(td_target(
             reward=rewards,

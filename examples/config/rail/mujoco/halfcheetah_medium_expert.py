@@ -9,6 +9,7 @@ params.update({
 })
 params['kwargs'].update({
     'pool_load_path': 'd4rl/halfcheetah-medium-expert-v2',
+    'expert_load_path': 'd4rl/halfcheetah-expert-v2',
     'rollout_length': 5,
     'adversary_loss_weighting': 3e-4,
 })
