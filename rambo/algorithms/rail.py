@@ -28,8 +28,20 @@ import rambo.utils.filesystem as filesystem
 import rambo.off_policy.loader as loader
 
 
-def td_target(reward, discount, next_value):
-    return reward + discount * next_value
+def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model):
+    rwd = tf.clip_by_value(
+        rwd_model([
+        observation * (1 - terminated), 
+        action * (1 - terminated),
+        terminated,
+        ]),
+        -rwd_clip_max, rwd_clip_max
+    )
+    return rwd
+
+def td_target(reward, discount, next_value, terminated):
+    value_done = discount / (1 - discount) * reward
+    return reward + (1 - terminated) * discount * next_value + (terminated) * value_done
 
 class RAIL(RLAlgorithm):
     """ Robust adversarial imitation learning
@@ -126,10 +138,10 @@ class RAIL(RLAlgorithm):
                                       name=model_name, load_dir=model_load_dir,
                                       deterministic=deterministic, session=self._session)
         self._reward = feedforward_model(
-            input_shapes=((self._obs_dim,), (self._act_dim,)),
+            input_shapes=((self._obs_dim,), (self._act_dim,), (1,)),
             output_size=1, 
             hidden_layer_sizes=config["Q_params"]['kwargs']["hidden_layer_sizes"],
-        )
+        ) # reward model with terminal flag at end
         self._static_fns = static_fns
         print("config", config)
 
@@ -468,8 +480,10 @@ class RAIL(RLAlgorithm):
             feed_dict = {
                 self._observations_ph: real_batch["observations"],
                 self._actions_ph: real_batch["actions"],
+                self._terminals_ph: real_batch["terminals"],
                 self._fake_observations_ph: fake_batch["observations"],
                 self._fake_actions_ph: fake_batch["actions"],
+                self._fake_terminals_ph: fake_batch["terminals"],
             }
 
             # get stats
@@ -820,6 +834,12 @@ class RAIL(RLAlgorithm):
             name='fake_actions',
         )
 
+        self._fake_terminals_ph = tf.placeholder(
+            tf.float32,
+            shape=(None, 1),
+            name='fake_terminals',
+        )
+
         if self._store_extra_policy_info:
             self._log_pis_ph = tf.placeholder(
                 tf.float32,
@@ -833,10 +853,13 @@ class RAIL(RLAlgorithm):
             )
 
     def _get_Q_target(self):
-        reward = tf.clip_by_value(
-            tf.stop_gradient(self._reward([self._observations_ph, self._actions_ph])),
-            -self._rwd_clip_max, self._rwd_clip_max
-        ) # reward edit
+        reward = tf.stop_gradient(compute_reward(
+            self._observations_ph, 
+            self._actions_ph,
+            self._terminals_ph,
+            self._rwd_clip_max,
+            self._reward
+        ))
         next_actions = self._policy.actions([self._next_observations_ph])
         next_log_pis = self._policy.log_pis(
             [self._next_observations_ph], next_actions)
@@ -849,10 +872,11 @@ class RAIL(RLAlgorithm):
         next_value = min_next_Q - self._alpha * next_log_pis
 
         Q_target = td_target(
-            # reward=self._reward_scale * self._rewards_ph,
             reward=reward,
             discount=self._discount,
-            next_value=(1 - self._terminals_ph) * next_value)
+            next_value=next_value,
+            terminated=self._terminals_ph
+        ) # reward edit
 
         return Q_target
 
@@ -1000,13 +1024,19 @@ class RAIL(RLAlgorithm):
     
     def _init_reward_update(self):
         # compute reward loss
-        real_rwd = self._real_rwd = tf.clip_by_value(
-            self._reward([self._observations_ph, self._actions_ph]), 
-            -self._rwd_clip_max, self._rwd_clip_max
+        real_rwd = self._real_rwd = compute_reward(
+            self._observations_ph, 
+            self._actions_ph,
+            self._terminals_ph,
+            self._rwd_clip_max,
+            self._reward
         )
-        fake_rwd = self._fake_rwd = tf.clip_by_value(
-            self._reward([self._fake_observations_ph, self._fake_actions_ph]),
-            -self._rwd_clip_max, self._rwd_clip_max
+        fake_rwd = self._fake_rwd = compute_reward(
+            self._fake_observations_ph, 
+            self._fake_actions_ph,
+            self._fake_terminals_ph,
+            self._rwd_clip_max,
+            self._reward
         )
         reward_loss = -(tf.reduce_mean(real_rwd, axis=0) - tf.reduce_mean(fake_rwd, axis=0))
 
@@ -1014,8 +1044,9 @@ class RAIL(RLAlgorithm):
         epsilon = tf.random_uniform([], 0.0, 1.0)
         interp_observations = epsilon * self._observations_ph + (1 - epsilon) * self._fake_observations_ph
         interp_actions = epsilon * self._actions_ph + (1 - epsilon) * self._fake_actions_ph
+        interp_terminals = epsilon * self._terminals_ph + (1 - epsilon) * self._fake_terminals_ph
         grad = tf.gradients(
-            self._reward([interp_observations, interp_actions]), 
+            self._reward([interp_observations, interp_actions, interp_terminals]), 
             [interp_observations, interp_actions]
         )[0]
         grad_penalty = tf.reduce_mean(tf.square(tf.norm(grad, ord=2) - 1))
@@ -1049,10 +1080,6 @@ class RAIL(RLAlgorithm):
         samples = self._samples = tf.gather_nd(ensemble_samples, model_inds)
         self._model_stds = tf.gather_nd(ensemble_model_stds, model_inds)
         # rewards = tf.squeeze(samples[:, :1])
-        rewards = tf.clip_by_value(
-            tf.stop_gradient(self._reward([self._observations_ph, self._actions_ph])),
-            -self._rwd_clip_max, self._rwd_clip_max
-        ) # reward edit
         next_obs = self._next_obs = samples[:, 1:]
 
         # compute log probability of successor state
@@ -1102,8 +1129,21 @@ class RAIL(RLAlgorithm):
             self._actions_ph,
             utl.unnormalize(next_obs, self._obs_mean, self._obs_std)
         )
-        done_mask = self._dones = tf.ones_like(terminals) - terminals
-        value = self._value = self._reward_scale * rewards + self._discount * next_value * done_mask
+        done_mask = self._dones = tf.expand_dims(tf.ones_like(terminals) - terminals, axis=-1)
+
+        rewards = tf.stop_gradient(compute_reward(
+            self._observations_ph, 
+            self._actions_ph,
+            done_mask,
+            self._rwd_clip_max,
+            self._reward
+        )) # reward edit
+        value = self._value = tf.stop_gradient(td_target(
+            reward=rewards,
+            discount=self._discount,
+            next_value=next_value,
+            terminated=done_mask
+        )) # reward edit
 
         pred_Qs_values = tuple(
             tf.stop_gradient(Q([self._observations_ph, self._actions_ph]))
