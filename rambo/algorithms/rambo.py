@@ -160,6 +160,8 @@ class RAMBO(RLAlgorithm):
             config["environment_params"]["training"]["domain"],
             config["environment_params"]["training"]["task"]
         ))
+        if not os.path.exists(self._log_dir):
+            os.makedirs(self._log_dir)
         self._writer = Writer(self._log_dir, log_wandb, wandb_project, wandb_group, config)
         print('[ RAMBO ] WANDB Group: {}'.format(wandb_group))
 

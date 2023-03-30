@@ -16,6 +16,7 @@ from tensorflow.python.training import training_util
 
 from softlearning.algorithms.rl_algorithm import RLAlgorithm
 from softlearning.replay_pools.simple_replay_pool import SimpleReplayPool
+from softlearning.models.feedforward import feedforward_model
 
 from rambo.models.constructor import construct_model, format_samples_for_training
 from rambo.models.fake_env import FakeEnv
@@ -29,7 +30,6 @@ import rambo.off_policy.loader as loader
 
 def td_target(reward, discount, next_value):
     return reward + discount * next_value
-
 
 class RAIL(RLAlgorithm):
     """ Robust adversarial imitation learning
@@ -52,6 +52,13 @@ class RAIL(RLAlgorithm):
             wandb_group="",
             config=None,
 
+            rwd_clip_max=10.,
+            rwd_rollout_batch_size=32,
+            rwd_rollout_length=100,
+            rwd_lr=3e-4,
+            rwd_steps=50,
+            grad_penalty=1.,
+
             train_adversarial=True,
             start_adv_train_epoch=0,
             end_adv_train_epoch=float('inf'),
@@ -73,7 +80,7 @@ class RAIL(RLAlgorithm):
             tau=5e-3,
             target_update_interval=1,
             action_prior='uniform',
-            reparameterize=False,
+            reparameterize=True,
             store_extra_policy_info=False,
             pretrain_bc=False,
             bc_lr=1e-4,
@@ -118,7 +125,13 @@ class RAIL(RLAlgorithm):
                                       model_type=model_type, separate_mean_var=separate_mean_var,
                                       name=model_name, load_dir=model_load_dir,
                                       deterministic=deterministic, session=self._session)
+        self._reward = feedforward_model(
+            input_shapes=((self._obs_dim,), (self._act_dim,)),
+            output_size=1, 
+            hidden_layer_sizes=config["Q_params"]['kwargs']["hidden_layer_sizes"],
+        )
         self._static_fns = static_fns
+        print("config", config)
 
         self._rollout_schedule = [20, 100, rollout_length, rollout_length]
         self._max_model_t = max_model_t
@@ -131,7 +144,19 @@ class RAIL(RLAlgorithm):
         self._real_ratio = real_ratio
         self._Q_avgs = list()
         self._n_iters_qvar = [100]
-
+        
+        # reward
+        self._rwd_clip_max = rwd_clip_max
+        self._rwd_rollout_batch_size = max(
+            rwd_rollout_batch_size, 
+            int(self.sampler._batch_size * rwd_steps // rwd_rollout_length)
+        )
+        self._rwd_rollout_length = rwd_rollout_length
+        self._rwd_lr = rwd_lr
+        self._rwd_steps = rwd_steps
+        self._grad_penalty = grad_penalty
+        
+        # model
         self._start_adv_train_epoch = start_adv_train_epoch
         self._end_adv_train_epoch = end_adv_train_epoch
         self._adversary_loss_weighting = adversary_loss_weighting
@@ -152,6 +177,8 @@ class RAIL(RLAlgorithm):
             config["environment_params"]["training"]["domain"],
             config["environment_params"]["training"]["task"]
         ))
+        if not os.path.exists(self._log_dir):
+            os.makedirs(self._log_dir)
         self._writer = Writer(self._log_dir, log_wandb, wandb_project, wandb_group, config)
         print('[ RAMBO ] WANDB Group: {}'.format(wandb_group))
 
@@ -226,6 +253,12 @@ class RAIL(RLAlgorithm):
 
         self.fake_env = FakeEnv(self._model, self._static_fns, penalty_coeff=0,
                                 obs_mean=self._obs_mean, obs_std=self._obs_std)
+        
+        self._reward_pool = SimpleReplayPool(
+            self._pool._observation_space,
+            self._pool._action_space,
+            self._rwd_steps * self.sampler._batch_size * self._model_retain_epochs
+        )
 
     def _build(self):
         self._training_ops = {}
@@ -279,8 +312,10 @@ class RAIL(RLAlgorithm):
 
         model_metrics.update(model_train_metrics)
         self._log_model()
+        self._init_reward_update()
         self._init_adversarial_model_update()
         gt.stamp('epoch_train_model')
+        rwd_loss = 0
         ####
 
 
@@ -307,7 +342,12 @@ class RAIL(RLAlgorithm):
                     ## model rollouts
                     if timestep % self._model_train_freq == 0 and self._real_ratio < 1.0:
                         self._reallocate_model_pool()
-                        model_rollout_metrics = self._rollout_model(rollout_batch_size=self._rollout_batch_size, deterministic=self._deterministic)
+                        model_rollout_metrics = self._rollout_model(
+                            self._model_pool,
+                            rollout_batch_size=self._rollout_batch_size, 
+                            rollout_length=self._rollout_length,
+                            deterministic=self._deterministic,
+                        )
                         model_metrics.update(model_rollout_metrics)
 
                         gt.stamp('epoch_rollout_model')
@@ -382,6 +422,7 @@ class RAIL(RLAlgorithm):
                 for i in range(len(current_losses)):
                     diagnostics.update({'model/current_val_loss_' + str(i): current_losses[i]})
                 diagnostics.update({'model/current_val_loss_avg': current_losses.mean()})
+                diagnostics.update({'reward/loss': rwd_loss})
 
                 self._writer.add_dict(diagnostics, self._epoch)
                 self._save_checkpoint()
@@ -397,6 +438,16 @@ class RAIL(RLAlgorithm):
                 assert self._pool.size == self._init_pool_size
 
                 yield diagnostics
+            
+            # reward training loop
+            print("[ Reward Rollout ]")
+            self._rollout_model(
+                self._reward_pool,
+                rollout_batch_size=self._rwd_rollout_batch_size, 
+                rollout_length=self._rwd_rollout_length,
+                deterministic=self._deterministic,
+            )
+            rwd_loss = self._train_reward()
 
             # adversarial training loop
             while self._adv_epoch < self._update_adv_ratio * self._epoch:
@@ -408,6 +459,28 @@ class RAIL(RLAlgorithm):
         self._training_after_hook()
 
         yield {'done': True, **diagnostics}
+    
+    def _train_reward(self):
+        rwd_loss_epoch = []
+        for i in range(self._rwd_steps):
+            real_batch = self.sampler.random_batch(int(self.sampler._batch_size/2))
+            fake_batch = self._reward_pool.random_batch(int(self.sampler._batch_size/2))
+            feed_dict = {
+                self._observations_ph: real_batch["observations"],
+                self._actions_ph: real_batch["actions"],
+                self._fake_observations_ph: fake_batch["observations"],
+                self._fake_actions_ph: fake_batch["actions"],
+            }
+
+            # get stats
+            real_rwd, fake_rwd, _ = self._session.run(
+                (self._real_rwd, self._fake_rwd, self._reward_train_op), 
+                feed_dict
+            )
+            rwd_loss = np.mean(real_rwd, axis=0) - np.mean(fake_rwd, axis=0)
+            rwd_loss_epoch.append(rwd_loss)
+
+        return np.mean(rwd_loss_epoch)
 
     def _train_adversary(self):
         """ train adversarial model using on-policy updates.
@@ -582,14 +655,14 @@ class RAIL(RLAlgorithm):
             progress.update()
             progress.set_description([['BC loss', mse_loss]])
 
-    def _rollout_model(self, rollout_batch_size, **kwargs):
+    def _rollout_model(self, pool, rollout_batch_size, rollout_length, **kwargs):
         print('[ Model Rollout ] Starting | Epoch: {} | Rollout length: {} | Batch size: {} | Type: {}'.format(
-            self._epoch, self._rollout_length, rollout_batch_size, self._model_type
+            self._epoch, rollout_length, rollout_batch_size, self._model_type
         ))
         batch = self.sampler.random_batch(rollout_batch_size)
         obs = batch['observations']
         steps_added = []
-        for i in range(self._rollout_length):
+        for i in range(rollout_length):
             if not self._rollout_random:
                 act = self._policy.actions_np(obs)
             else:
@@ -606,7 +679,7 @@ class RAIL(RLAlgorithm):
             steps_added.append(len(obs))
 
             samples = {'observations': obs, 'actions': act, 'next_observations': next_obs, 'rewards': rew, 'terminals': term}
-            self._model_pool.add_samples(samples)
+            pool.add_samples(samples)
 
             nonterm_mask = ~term.squeeze(-1)
             if nonterm_mask.sum() == 0:
@@ -622,7 +695,7 @@ class RAIL(RLAlgorithm):
                         'avg_reward': np.mean(rew),
                         'std_reward': np.std(rew)}
         print('[ Model Rollout ] Added: {:.1e} | Model pool: {:.1e} (max {:.1e}) | Length: {} | Train rep: {}'.format(
-            sum(steps_added), self._model_pool.size, self._model_pool._max_size, mean_rollout_length, self._n_train_repeat
+            sum(steps_added), pool.size, pool._max_size, mean_rollout_length, self._n_train_repeat
         ))
         return rollout_stats
 
@@ -733,6 +806,19 @@ class RAIL(RLAlgorithm):
             shape=(None, 1),
             name='terminals',
         )
+        
+        # reward edits
+        self._fake_observations_ph = tf.placeholder(
+            tf.float32,
+            shape=(None, *self._observation_shape),
+            name='fake_observation',
+        )
+
+        self._fake_actions_ph = tf.placeholder(
+            tf.float32,
+            shape=(None, *self._action_shape),
+            name='fake_actions',
+        )
 
         if self._store_extra_policy_info:
             self._log_pis_ph = tf.placeholder(
@@ -747,6 +833,10 @@ class RAIL(RLAlgorithm):
             )
 
     def _get_Q_target(self):
+        reward = tf.clip_by_value(
+            tf.stop_gradient(self._reward([self._observations_ph, self._actions_ph])),
+            -self._rwd_clip_max, self._rwd_clip_max
+        ) # reward edit
         next_actions = self._policy.actions([self._next_observations_ph])
         next_log_pis = self._policy.log_pis(
             [self._next_observations_ph], next_actions)
@@ -759,7 +849,8 @@ class RAIL(RLAlgorithm):
         next_value = min_next_Q - self._alpha * next_log_pis
 
         Q_target = td_target(
-            reward=self._reward_scale * self._rewards_ph,
+            # reward=self._reward_scale * self._rewards_ph,
+            reward=reward,
             discount=self._discount,
             next_value=(1 - self._terminals_ph) * next_value)
 
@@ -906,6 +997,37 @@ class RAIL(RLAlgorithm):
             ) if self._tf_summaries else ())
 
         self._training_ops.update({'policy_train_op': policy_train_op})
+    
+    def _init_reward_update(self):
+        # compute reward loss
+        real_rwd = self._real_rwd = tf.clip_by_value(
+            self._reward([self._observations_ph, self._actions_ph]), 
+            -self._rwd_clip_max, self._rwd_clip_max
+        )
+        fake_rwd = self._fake_rwd = tf.clip_by_value(
+            self._reward([self._fake_observations_ph, self._fake_actions_ph]),
+            -self._rwd_clip_max, self._rwd_clip_max
+        )
+        reward_loss = -(tf.reduce_mean(real_rwd, axis=0) - tf.reduce_mean(fake_rwd, axis=0))
+
+        # compute gradient penalty
+        epsilon = tf.random_uniform([], 0.0, 1.0)
+        interp_observations = epsilon * self._observations_ph + (1 - epsilon) * self._fake_observations_ph
+        interp_actions = epsilon * self._actions_ph + (1 - epsilon) * self._fake_actions_ph
+        grad = tf.gradients(
+            self._reward([interp_observations, interp_actions]), 
+            [interp_observations, interp_actions]
+        )[0]
+        grad_penalty = tf.reduce_mean(tf.square(tf.norm(grad, ord=2) - 1))
+
+        total_loss = reward_loss + self._grad_penalty * grad_penalty
+
+        self._rwd_optimizer = tf.train.AdamOptimizer(learning_rate=self._rwd_lr)
+        self._reward_train_op = self._rwd_optimizer.minimize(
+            total_loss,
+            var_list=self._reward.trainable_variables
+        )
+        self._session.run(tf.variables_initializer(self._rwd_optimizer.variables()))
 
     def _init_adversarial_model_update(self):
         """ Initialise update to adversarially modify the model.
@@ -926,7 +1048,11 @@ class RAIL(RLAlgorithm):
         model_inds = [[model_inds[i], i] for i in range(len(model_inds))]
         samples = self._samples = tf.gather_nd(ensemble_samples, model_inds)
         self._model_stds = tf.gather_nd(ensemble_model_stds, model_inds)
-        rewards = tf.squeeze(samples[:, :1])
+        # rewards = tf.squeeze(samples[:, :1])
+        rewards = tf.clip_by_value(
+            tf.stop_gradient(self._reward([self._observations_ph, self._actions_ph])),
+            -self._rwd_clip_max, self._rwd_clip_max
+        ) # reward edit
         next_obs = self._next_obs = samples[:, 1:]
 
         # compute log probability of successor state
