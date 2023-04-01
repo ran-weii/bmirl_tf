@@ -22,16 +22,19 @@ base_params = {
         'alpha': 1.,
         'auto_alpha': True,
         
+        'num_expert_traj': 50,
+        'rwd_done_flag': True,
         'rwd_clip_max': 10,
-        'rwd_rollout_batch_size': 32,
+        'rwd_rollout_batch_size': 64,
         'rwd_rollout_length': 100,
-        'rwd_steps': 50,
-        'grad_penalty': 1,
+        'rwd_update_method': 'traj', # traj or marginal
+        'rwd_steps': 1,
+        'grad_penalty': 0,
 
         'critic_lr': 3e-4,
         'actor_lr': 1e-4,
         'adv_lr': 3e-4,
-        'rwd_lr': 3e-4,
+        'rwd_lr': 1e-4,
         'real_ratio': 0.5,
         'train_adversarial': True,
         'model_train_freq': 1000,

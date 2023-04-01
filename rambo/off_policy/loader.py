@@ -23,7 +23,8 @@ def restore_pool(
 def restore_pool_d4rl(replay_pool, name):
     import gym
     import d4rl
-    data = d4rl.qlearning_dataset(gym.make(name))
+    # data = d4rl.qlearning_dataset(gym.make(name))
+    data = gym.make(name).get_dataset()
     data['rewards'] = np.expand_dims(data['rewards'], axis=1)
     data['terminals'] = np.expand_dims(data['terminals'], axis=1)
     return data
@@ -59,3 +60,52 @@ def normalise_data(data, normalize_states, normalize_rewards, dataset_name):
         data["next_observations"] = next_obs_norm
 
     return data, obs_mean, obs_std
+
+def parse_stacked_trajectories(data, max_eps=None, skip_terminated=True):
+    obs = data["observations"]
+    act = data["actions"]
+    rwd = data["rewards"]
+    next_obs = data["next_observations"]
+    terminated = data["terminals"]
+    timeout = np.expand_dims(data['timeouts'], axis=1)
+
+    eps_id = np.cumsum(terminated + timeout, axis=0).flatten()
+    eps_id = np.insert(eps_id, 0, 0)[:-1] # offset by 1 step
+    max_eps = eps_id.max() + 1 if max_eps is None else max_eps
+
+    dataset = []
+    for e in np.unique(eps_id):
+        if terminated[eps_id == e].sum() > 0 and skip_terminated:
+            continue
+
+        dataset.append({
+            "obs": obs[eps_id == e],
+            "act": act[eps_id == e],
+            "rwd": rwd[eps_id == e],
+            "next_obs": next_obs[eps_id == e],
+            "done": terminated[eps_id == e],
+        })
+
+        if len(dataset) >= max_eps:
+            break
+    return dataset
+
+def sample_expert_segments(traj_dataset, num_samples, seg_len=200):
+    # assume equal trajectory lengths
+    max_len = traj_dataset[0]["obs"].shape[0]
+    
+    obs = []
+    act = []
+    done = []
+    eps_id = np.random.randint(0, len(traj_dataset), num_samples)
+    for i in eps_id:
+        traj = traj_dataset[i]
+        seg_start = np.random.randint(0, max_len - seg_len)
+        obs.append(traj["obs"][seg_start:seg_start+seg_len])
+        act.append(traj["act"][seg_start:seg_start+seg_len])
+        done.append(traj["done"][seg_start:seg_start+seg_len])
+    
+    obs = np.stack(obs)
+    act = np.stack(act)
+    done = np.stack(done)
+    return obs, act, done
