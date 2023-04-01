@@ -19,6 +19,8 @@ base_params = {
         'discount': 0.99,
         'tau': 5e-3,
         'reward_scale': 1.0,
+        'alpha': 1.,
+        'auto_alpha': True,
         
         'rwd_clip_max': 10,
         'rwd_rollout_batch_size': 32,

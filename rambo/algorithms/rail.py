@@ -95,6 +95,8 @@ class RAIL(RLAlgorithm):
             target_entropy='auto',
             discount=0.99,
             tau=5e-3,
+            alpha=0.2,
+            auto_alpha=False,
             target_update_interval=1,
             action_prior='uniform',
             reparameterize=True,
@@ -220,6 +222,8 @@ class RAIL(RLAlgorithm):
         self.dynamics_pretrain_epochs = dynamics_pretrain_epochs
 
         self._reward_scale = reward_scale
+        self._alpha = alpha
+        self._auto_alpha = auto_alpha
         self._target_entropy = (
             -np.prod(self._training_environment.action_space.shape)
             if target_entropy == 'auto'
@@ -272,6 +276,7 @@ class RAIL(RLAlgorithm):
             self._pool._action_space,
             2e6
         )
+        print("loading expert pool from", self._expert_load_path)
         loader.restore_pool(
             self._expert_pool,
             self._expert_load_path,
@@ -988,9 +993,8 @@ class RAIL(RLAlgorithm):
             'log_alpha',
             dtype=tf.float32,
             initializer=0.0)
-        alpha = tf.exp(log_alpha)
 
-        if isinstance(self._target_entropy, Number):
+        if isinstance(self._target_entropy, Number) and self._auto_alpha:
             alpha_loss = -tf.reduce_mean(
                 log_alpha * tf.stop_gradient(log_pis + self._target_entropy))
 
@@ -1003,7 +1007,13 @@ class RAIL(RLAlgorithm):
                 'temperature_alpha': self._alpha_train_op
             })
 
-        self._alpha = alpha
+        if self._auto_alpha:
+            alpha = tf.exp(log_alpha)
+            self._alpha = alpha
+        else:
+            alpha = tf.convert_to_tensor(
+                self._alpha, dtype=None, dtype_hint=None, name=None
+            )
 
         if self._action_prior == 'normal':
             policy_prior = tf.contrib.distributions.MultivariateNormalDiag(
@@ -1276,10 +1286,9 @@ class RAIL(RLAlgorithm):
 
         feed_dict = self._get_feed_dict(iteration, batch, adv_update=True)
 
-        (Q_values, Q_losses, alpha, global_step, model_stds) = self._session.run(
+        (Q_values, Q_losses, global_step, model_stds) = self._session.run(
             (self._Q_values,
              self._Q_losses,
-             self._alpha,
              self.global_step,
              self._model_stds),
             feed_dict)
@@ -1289,7 +1298,7 @@ class RAIL(RLAlgorithm):
             'Q-avg': np.mean(Q_values),
             'Q-std': np.std(Q_values),
             'Q_loss': np.mean(Q_losses),
-            'alpha': alpha,
+            'alpha': self._alpha,
             'model_std_dev': np.mean(model_stds)
         })
 
