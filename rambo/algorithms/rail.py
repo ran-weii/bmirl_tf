@@ -47,8 +47,8 @@ def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, obs
     else:
         rwd = tf.clip_by_value(
             rwd_model([
-            observation_ * (1 - terminated), 
-            action * (1 - terminated),
+            observation_, 
+            action,
             ]),
             -rwd_clip_max, rwd_clip_max
         )
@@ -382,6 +382,7 @@ class RAIL(RLAlgorithm):
         self._init_adversarial_model_update()
         gt.stamp('epoch_train_model')
         rwd_loss = np.nan
+        adv_stats = {}
         ####
 
 
@@ -489,6 +490,7 @@ class RAIL(RLAlgorithm):
                     diagnostics.update({'model/current_val_loss_' + str(i): current_losses[i]})
                 diagnostics.update({'model/current_val_loss_avg': current_losses.mean()})
                 diagnostics.update({'reward/loss': rwd_loss})
+                diagnostics.update(adv_stats)
 
                 self._writer.add_dict(diagnostics, self._epoch)
                 self._save_checkpoint()
@@ -511,7 +513,7 @@ class RAIL(RLAlgorithm):
 
             # adversarial training loop
             while self._adv_epoch < self._update_adv_ratio * self._epoch:
-                self._train_adversary()
+                adv_stats = self._train_adversary()
                 self._adv_epoch += 1
 
         self.sampler.terminate()
@@ -601,7 +603,9 @@ class RAIL(RLAlgorithm):
         """
         if (self._epoch < self._start_adv_train_epoch) or not self._train_adversarial:
             return
-
+        
+        adv_loss = []
+        obs_loss = []
         steps = 0
         while steps < self._epoch_length:
             batch = self.sampler.random_batch(self.sampler._batch_size)
@@ -616,16 +620,20 @@ class RAIL(RLAlgorithm):
                     self._model.sy_train_targ: targets
                 }
 
-                next_obs, _ = self._session.run(
-                    (self._next_obs, self._adversarial_train_op),
+                next_obs, adv_obj, supervised_loss, _ = self._session.run(
+                    (self._next_obs, self._adv_objective, self._supervised_loss, self._adversarial_train_op),
                     feed_dict
                 )
+
+                adv_loss.append(np.mean(adv_obj))
+                obs_loss.append(supervised_loss)
 
                 obs = next_obs
 
                 steps += 1
                 if steps == self._epoch_length:
                     break
+        return {"adv_loss": np.mean(adv_loss), "obs_loss": np.mean(obs_loss)}
 
     def train(self, *args, **kwargs):
         return self._train(*args, **kwargs)
@@ -1220,7 +1228,11 @@ class RAIL(RLAlgorithm):
             self._rwd_done_flag
         )
         if self._rwd_update_method == "traj":
-            reward_loss = -(tf.reduce_mean(tf.reduce_sum(real_rwd, axis=1), axis=0) - tf.reduce_mean(tf.reduce_sum(fake_rwd, axis=1), axis=0))
+            gamma = self._discount ** np.arange(self._rwd_rollout_length).reshape(1, -1, 1)
+            reward_loss = -(
+                tf.reduce_mean(tf.reduce_sum(gamma * real_rwd, axis=1), axis=0) \
+                - tf.reduce_mean(tf.reduce_sum(gamma * fake_rwd, axis=1), axis=0)
+            ) / self._rwd_rollout_length
         else:
             reward_loss = -(tf.reduce_mean(real_rwd.sum(1), axis=0) - tf.reduce_mean(fake_rwd.sum(1), axis=0))
 
@@ -1347,10 +1359,10 @@ class RAIL(RLAlgorithm):
         # normalise advantages using batch mean and std
         advantages = self._advantages = value - pred_value
         advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
-        adv_objective = advantages * log_prob
+        adv_objective = self._adv_objective = advantages * log_prob
 
         # total loss includes mle loss + lambda * adversarial loss
-        supervised_loss = self._model.train_loss
+        supervised_loss = self._supervised_loss = self._supervised_loss = self._model.train_loss
         total_loss = adv_objective * self._adversary_loss_weighting + supervised_loss
 
         self._adv_optimizer = tf.train.AdamOptimizer(learning_rate=self._adv_lr)

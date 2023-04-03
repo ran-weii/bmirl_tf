@@ -23,13 +23,13 @@ base_params = {
         'auto_alpha': True,
         
         'num_expert_traj': 50,
-        'rwd_done_flag': True,
+        'rwd_done_flag': False,
         'rwd_clip_max': 10,
         'rwd_rollout_batch_size': 64,
         'rwd_rollout_length': 100,
         'rwd_update_method': 'traj', # traj or marginal
         'rwd_steps': 1,
-        'grad_penalty': 0,
+        'grad_penalty': 1,
 
         'critic_lr': 3e-4,
         'actor_lr': 1e-4,
