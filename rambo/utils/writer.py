@@ -21,8 +21,7 @@ class Writer():
         self._data_3d = {}
         
         _make_dir(log_dir)
-        date_time = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
-        self.csv_dir = os.path.join(log_dir, f"history_{date_time}.csv")
+        self.csv_dir = os.path.join(log_dir, f"history.csv")
         self.history = []
         print('[ Writer ] Log dir: {}'.format(log_dir))
 

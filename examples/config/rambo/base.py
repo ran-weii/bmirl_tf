@@ -3,7 +3,7 @@ base_params = {
     'universe': 'gym',
 
     'kwargs': {
-        'log_dir': './logs/',
+        'log_dir': './logs/rambo',
         'log_wandb': False,
 
         'epoch_length': 1000,

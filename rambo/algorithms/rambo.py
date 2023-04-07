@@ -1,6 +1,7 @@
 import os
 import math
 import pickle
+import datetime
 from collections import OrderedDict
 from numbers import Number
 from itertools import count
@@ -155,10 +156,12 @@ class RAMBO(RLAlgorithm):
             self._train_adversarial = False
         else:
             self._train_adversarial = train_adversarial
-
-        self._log_dir = os.path.join(log_dir, "{}-{}".format(
+        
+        date_time = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
+        self._log_dir = os.path.join(log_dir, "{}-{}/{}".format(
             config["environment_params"]["training"]["domain"],
-            config["environment_params"]["training"]["task"]
+            config["environment_params"]["training"]["task"], 
+            date_time,
         ))
         if not os.path.exists(self._log_dir):
             os.makedirs(self._log_dir)
