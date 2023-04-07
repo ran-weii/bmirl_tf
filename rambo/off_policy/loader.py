@@ -9,12 +9,16 @@ def restore_pool(
         experiment_root,
         save_path=None,
         normalize_states=True,
-        normalize_rewards=False
+        normalize_rewards=False,
+        obs_mean=None,
+        obs_std=None,
     ):
     if 'd4rl' in experiment_root:
         data = restore_pool_d4rl(replay_pool, experiment_root[5:])
 
-    data, obs_mean, obs_std = normalise_data(data, normalize_states, normalize_rewards, experiment_root)
+    data, obs_mean, obs_std = normalise_data(
+        data, normalize_states, normalize_rewards, experiment_root, obs_mean, obs_std
+    )
     replay_pool.add_samples(data)
 
     print('[ mbpo/off_policy ] Replay pool has size: {}'.format(replay_pool.size))
@@ -29,9 +33,9 @@ def restore_pool_d4rl(replay_pool, name):
     data['terminals'] = np.expand_dims(data['terminals'], axis=1)
     return data
 
-def normalise_data(data, normalize_states, normalize_rewards, dataset_name):
-    obs_mean = None
-    obs_std = None
+def normalise_data(data, normalize_states, normalize_rewards, dataset_name, obs_mean=None, obs_std=None):
+    # obs_mean = None
+    # obs_std = None
     if (not normalize_states) and (not normalize_rewards):
         return data, obs_mean, obs_std
 
@@ -51,8 +55,8 @@ def normalise_data(data, normalize_states, normalize_rewards, dataset_name):
         data['rewards'] = rewards / rew_std
 
     if normalize_states:
-        obs_mean = np.mean(obs[inds, :], axis=0)
-        obs_std = np.std(obs[inds, :], axis=0) + 1e-6 # avoid division by zero
+        obs_mean = obs_mean if obs_mean is not None else np.mean(obs[inds, :], axis=0)
+        obs_std = obs_std if obs_std is not None else np.std(obs[inds, :], axis=0) + 1e-6 # avoid division by zero
         obs_norm = (obs - obs_mean) / obs_std
         next_obs_norm = (next_obs - obs_mean) / obs_std
 
@@ -61,7 +65,10 @@ def normalise_data(data, normalize_states, normalize_rewards, dataset_name):
 
     return data, obs_mean, obs_std
 
-def parse_stacked_trajectories(data, max_eps=None, skip_terminated=True):
+def parse_stacked_trajectories(data, max_eps=None, skip_terminated=True, obs_mean=None, obs_std=None):
+    obs_mean = 0. if obs_mean is None else obs_mean
+    obs_std = 1. if obs_std is None else obs_std
+
     obs = data["observations"]
     act = data["actions"]
     rwd = data["rewards"]
@@ -79,10 +86,10 @@ def parse_stacked_trajectories(data, max_eps=None, skip_terminated=True):
             continue
 
         dataset.append({
-            "obs": obs[eps_id == e],
+            "obs": (obs[eps_id == e] - obs_mean) / obs_std,
             "act": act[eps_id == e],
             "rwd": rwd[eps_id == e],
-            "next_obs": next_obs[eps_id == e],
+            "next_obs": (next_obs[eps_id == e] - obs_mean) / obs_std,
             "done": terminated[eps_id == e],
         })
 
