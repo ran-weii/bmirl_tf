@@ -1,6 +1,7 @@
 import os
 import math
 import pickle
+import datetime
 from collections import OrderedDict
 from numbers import Number
 from itertools import count
@@ -29,29 +30,18 @@ import rambo.off_policy.loader as loader
 from rambo.off_policy.loader import restore_pool_d4rl, parse_stacked_trajectories, sample_expert_segments
 
 
-def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, obs_mean, obs_std, use_done_flag=True):
-    if obs_mean is not None and obs_std is not None:
-        observation_ = (observation - obs_mean) / (obs_std + 1e-6)
-    else:
-        observation_ = observation
-    
+def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, use_done_flag=True, clip=True):
     if use_done_flag:
-        rwd = tf.clip_by_value(
-            rwd_model([
-            observation_ * (1 - terminated), 
+        rwd = rwd_model([
+            observation * (1 - terminated), 
             action * (1 - terminated),
             terminated,
-            ]),
-            -rwd_clip_max, rwd_clip_max
-        )
+        ])
     else:
-        rwd = tf.clip_by_value(
-            rwd_model([
-            observation_, 
-            action,
-            ]),
-            -rwd_clip_max, rwd_clip_max
-        )
+        rwd = rwd_model([observation, action,])
+
+    if clip:
+        rwd = tf.clip_by_value(rwd, -rwd_clip_max, rwd_clip_max)
     return rwd
 
 def td_target(reward, discount, next_value, terminated, use_done_flag=True):
@@ -174,17 +164,20 @@ class RAIL(RLAlgorithm):
         self._n_iters_qvar = [100]
         
         # reward
-        self._rwd_done_flag = rwd_done_flag
-        self._rwd_clip_max = rwd_clip_max
+        algo_params = config["algorithm_params"].toDict()["kwargs"]
+        
+        self._rwd_update_method = algo_params["rwd_update_method"]
+        self._rwd_done_flag = algo_params["rwd_done_flag"]
+        self._rwd_clip_max = algo_params["rwd_clip_max"]
+        self._rwd_rollout_batch_size = algo_params["rwd_rollout_batch_size"]
+        self._rwd_rollout_length = algo_params["rwd_rollout_length"]
+        self._rwd_steps = algo_params["rwd_steps"]
         self._rwd_rollout_batch_size = max(
-            rwd_rollout_batch_size, 
-            int(self.sampler._batch_size * rwd_steps // rwd_rollout_length)
+            self._rwd_rollout_batch_size, 
+            int(self.sampler._batch_size * self._rwd_steps // self._rwd_rollout_length)
         )
-        self._rwd_rollout_length = rwd_rollout_length
-        self._rwd_update_method = rwd_udpate_method
-        self._rwd_lr = rwd_lr
-        self._rwd_steps = rwd_steps
-        self._grad_penalty = grad_penalty
+        self._rwd_lr = algo_params["rwd_lr"]
+        self._grad_penalty = algo_params["grad_penalty"]
 
         if self._rwd_done_flag:
             self._reward = feedforward_model(
@@ -198,6 +191,11 @@ class RAIL(RLAlgorithm):
                 output_size=1, 
                 hidden_layer_sizes=config["Q_params"]['kwargs']["hidden_layer_sizes"],
             )
+
+        # print(self._reward.__dict__)
+        # print(self._reward.layers)
+        # for layer in self._reward.layers: print(layer.get_config(), layer.get_weights())
+        # exit()
 
         # model
         self._start_adv_train_epoch = start_adv_train_epoch
@@ -215,10 +213,12 @@ class RAIL(RLAlgorithm):
             self._train_adversarial = False
         else:
             self._train_adversarial = train_adversarial
-
-        self._log_dir = os.path.join(log_dir, "{}-{}".format(
+        
+        date_time = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
+        self._log_dir = os.path.join(log_dir, "{}-{}/{}".format(
             config["environment_params"]["training"]["domain"],
-            config["environment_params"]["training"]["task"]
+            config["environment_params"]["training"]["task"],
+            date_time,
         ))
         if not os.path.exists(self._log_dir):
             os.makedirs(self._log_dir)
@@ -297,19 +297,25 @@ class RAIL(RLAlgorithm):
         print("loading expert pool from", self._expert_load_path)
         if self._rwd_update_method == 'traj':
             data = restore_pool_d4rl(None, self._expert_load_path[5:])
-            self._expert_trajectories = parse_stacked_trajectories(data, max_eps=num_expert_traj, skip_terminated=True)
+            self._expert_trajectories = parse_stacked_trajectories(
+                data, max_eps=num_expert_traj, skip_terminated=True, 
+                obs_mean=obs_mean, obs_std=obs_std
+            )
         else:
             self._expert_pool = SimpleReplayPool(
                 self._pool._observation_space,
                 self._pool._action_space,
                 2e6
             )
+            
             loader.restore_pool(
                 self._expert_pool,
                 self._expert_load_path,
                 save_path=self._log_dir,
-                normalize_states=False,
-                normalize_rewards=False
+                normalize_states=True,
+                normalize_rewards=True,
+                obs_mean=obs_mean,
+                obs_std=obs_std
             )
         
         # pool for storing reward rollout samples
@@ -1033,9 +1039,8 @@ class RAIL(RLAlgorithm):
             self._terminals_ph,
             self._rwd_clip_max,
             self._reward,
-            self._obs_mean,
-            self._obs_std,
-            self._rwd_done_flag
+            self._rwd_done_flag,
+            clip=True
         ))
         next_actions = self._policy.actions([self._next_observations_ph])
         next_log_pis = self._policy.log_pis(
@@ -1213,9 +1218,8 @@ class RAIL(RLAlgorithm):
             self._real_terminals_ph,
             self._rwd_clip_max,
             self._reward,
-            self._obs_mean,
-            self._obs_std,
-            self._rwd_done_flag
+            self._rwd_done_flag,
+            clip=False
         )
         fake_rwd = self._fake_rwd = compute_reward(
             self._fake_observations_ph, 
@@ -1223,37 +1227,41 @@ class RAIL(RLAlgorithm):
             self._fake_terminals_ph,
             self._rwd_clip_max,
             self._reward,
-            self._obs_mean,
-            self._obs_std,
-            self._rwd_done_flag
+            self._rwd_done_flag,
+            clip=False
         )
         if self._rwd_update_method == "traj":
             gamma = self._discount ** np.arange(self._rwd_rollout_length).reshape(1, -1, 1)
             reward_loss = -(
                 tf.reduce_mean(tf.reduce_sum(gamma * real_rwd, axis=1), axis=0) \
                 - tf.reduce_mean(tf.reduce_sum(gamma * fake_rwd, axis=1), axis=0)
-            ) / self._rwd_rollout_length
+            ) #/ self._rwd_rollout_length
+
+            rwd_vars = self._reward.trainable_variables
+            decay_loss = tf.add_n([ tf.nn.l2_loss(v) for v in rwd_vars ]) * 0.001
+            
+            total_loss = reward_loss + decay_loss
         else:
             reward_loss = -(tf.reduce_mean(real_rwd.sum(1), axis=0) - tf.reduce_mean(fake_rwd.sum(1), axis=0))
 
-        # compute gradient penalty
-        epsilon = tf.random_uniform([], 0.0, 1.0)
-        interp_observations = epsilon * self._real_observations_ph + (1 - epsilon) * self._fake_observations_ph
-        interp_actions = epsilon * self._real_actions_ph + (1 - epsilon) * self._fake_actions_ph
-        interp_terminals = epsilon * self._real_terminals_ph + (1 - epsilon) * self._fake_terminals_ph
-        if self._rwd_done_flag:
-            grad = tf.gradients(
-                self._reward([interp_observations, interp_actions, interp_terminals]), 
-                [interp_observations, interp_actions]
-            )[0]
-        else:
-            grad = tf.gradients(
-                self._reward([interp_observations, interp_actions]), 
-                [interp_observations, interp_actions]
-            )[0]
-        grad_penalty = tf.reduce_mean(tf.square(tf.norm(grad, ord=2) - 1))
+            # compute gradient penalty
+            epsilon = tf.random_uniform([], 0.0, 1.0)
+            interp_observations = epsilon * self._real_observations_ph + (1 - epsilon) * self._fake_observations_ph
+            interp_actions = epsilon * self._real_actions_ph + (1 - epsilon) * self._fake_actions_ph
+            interp_terminals = epsilon * self._real_terminals_ph + (1 - epsilon) * self._fake_terminals_ph
+            if self._rwd_done_flag:
+                grad = tf.gradients(
+                    self._reward([interp_observations, interp_actions, interp_terminals]), 
+                    [interp_observations, interp_actions]
+                )[0]
+            else:
+                grad = tf.gradients(
+                    self._reward([interp_observations, interp_actions]), 
+                    [interp_observations, interp_actions]
+                )[0]
+            grad_penalty = tf.reduce_mean(tf.square(tf.norm(grad, ord=2) - 1))
 
-        total_loss = reward_loss + self._grad_penalty * grad_penalty
+            total_loss = reward_loss + self._grad_penalty * grad_penalty
 
         self._rwd_optimizer = tf.train.AdamOptimizer(learning_rate=self._rwd_lr)
         self._reward_train_op = self._rwd_optimizer.minimize(
@@ -1339,9 +1347,8 @@ class RAIL(RLAlgorithm):
             done_mask,
             self._rwd_clip_max,
             self._reward,
-            self._obs_mean,
-            self._obs_std,
-            self._rwd_done_flag
+            self._rwd_done_flag,
+            clip=True
         )) # reward edit
         value = self._value = tf.stop_gradient(td_target(
             reward=rewards,
