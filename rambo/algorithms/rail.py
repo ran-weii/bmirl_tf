@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import pickle
 import datetime
 from collections import OrderedDict
@@ -49,7 +50,7 @@ def td_target(reward, discount, next_value, terminated, use_done_flag=True):
     return reward + (1 - terminated) * discount * next_value + use_done_flag * (terminated) * value_done
 
 class RAIL(RLAlgorithm):
-    """ Robust adversarial imitation learning
+    """ Robust inverse reinforcement learning
     """
 
     def __init__(
@@ -192,11 +193,6 @@ class RAIL(RLAlgorithm):
                 hidden_layer_sizes=config["Q_params"]['kwargs']["hidden_layer_sizes"],
             )
 
-        # print(self._reward.__dict__)
-        # print(self._reward.layers)
-        # for layer in self._reward.layers: print(layer.get_config(), layer.get_weights())
-        # exit()
-
         # model
         self._start_adv_train_epoch = start_adv_train_epoch
         self._end_adv_train_epoch = end_adv_train_epoch
@@ -214,6 +210,7 @@ class RAIL(RLAlgorithm):
         else:
             self._train_adversarial = train_adversarial
         
+        # init logging
         date_time = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
         self._log_dir = os.path.join(log_dir, "{}-{}/{}".format(
             config["environment_params"]["training"]["domain"],
@@ -222,6 +219,10 @@ class RAIL(RLAlgorithm):
         ))
         if not os.path.exists(self._log_dir):
             os.makedirs(self._log_dir)
+        
+        # save config
+        with open(os.path.join(self._log_dir, "config.json"), "w") as f:
+            json.dump(config, f)
         self._writer = Writer(self._log_dir, log_wandb, wandb_project, wandb_group, config)
         print('[ RAMBO ] WANDB Group: {}'.format(wandb_group))
 
@@ -296,11 +297,15 @@ class RAIL(RLAlgorithm):
         self._expert_load_path = expert_load_path
         print("loading expert pool from", self._expert_load_path)
         if self._rwd_update_method == 'traj':
-            data = restore_pool_d4rl(None, self._expert_load_path[5:])
+            import gym
+            data = gym.make(self._expert_load_path[5:]).get_dataset()
+            data['rewards'] = np.expand_dims(data['rewards'], axis=1)
+            data['terminals'] = np.expand_dims(data['terminals'], axis=1)
             self._expert_trajectories = parse_stacked_trajectories(
                 data, max_eps=num_expert_traj, skip_terminated=True, 
                 obs_mean=obs_mean, obs_std=obs_std
             )
+            print(f"loaded {len(self._expert_trajectories)} expert trajectories")
         else:
             self._expert_pool = SimpleReplayPool(
                 self._pool._observation_space,
@@ -1242,7 +1247,7 @@ class RAIL(RLAlgorithm):
             
             total_loss = reward_loss + decay_loss
         else:
-            reward_loss = -(tf.reduce_mean(real_rwd.sum(1), axis=0) - tf.reduce_mean(fake_rwd.sum(1), axis=0))
+            reward_loss = -(tf.reduce_mean(real_rwd, axis=0) - tf.reduce_mean(fake_rwd, axis=0))
 
             # compute gradient penalty
             epsilon = tf.random_uniform([], 0.0, 1.0)
@@ -1366,7 +1371,7 @@ class RAIL(RLAlgorithm):
         # normalise advantages using batch mean and std
         advantages = self._advantages = value - pred_value
         advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
-        adv_objective = self._adv_objective = advantages * log_prob
+        adv_objective = self._adv_objective = tf.reduce_mean(advantages * log_prob)
 
         # total loss includes mle loss + lambda * adversarial loss
         supervised_loss = self._supervised_loss = self._supervised_loss = self._model.train_loss

@@ -11,5 +11,5 @@ params['kwargs'].update({
     'pool_load_path': 'd4rl/hopper-medium-replay-v2',
     'expert_load_path': 'd4rl/hopper-expert-v2',
     'rollout_length': 2,
-    'adversary_loss_weighting': 3e-4,
+    'adversary_loss_weighting': 0.0768,
 })

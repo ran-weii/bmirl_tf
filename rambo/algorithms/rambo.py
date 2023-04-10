@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import pickle
 import datetime
 from collections import OrderedDict
@@ -157,6 +158,7 @@ class RAMBO(RLAlgorithm):
         else:
             self._train_adversarial = train_adversarial
         
+        # init logging
         date_time = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
         self._log_dir = os.path.join(log_dir, "{}-{}/{}".format(
             config["environment_params"]["training"]["domain"],
@@ -165,6 +167,10 @@ class RAMBO(RLAlgorithm):
         ))
         if not os.path.exists(self._log_dir):
             os.makedirs(self._log_dir)
+
+        # save config
+        with open(os.path.join(self._log_dir, "config.json"), "w") as f:
+            json.dump(config, f)
         self._writer = Writer(self._log_dir, log_wandb, wandb_project, wandb_group, config)
         print('[ RAMBO ] WANDB Group: {}'.format(wandb_group))
 
@@ -1008,7 +1014,7 @@ class RAMBO(RLAlgorithm):
         # normalise advantages using batch mean and std
         advantages = self._advantages = value - pred_value
         advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
-        adv_objective = self._adv_objective = advantages * log_prob
+        adv_objective = self._adv_objective = tf.reduce_mean(advantages * log_prob) # debug insert
 
         # total loss includes mle loss + lambda * adversarial loss
         supervised_loss = self._supervised_loss = self._model.train_loss

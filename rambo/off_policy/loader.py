@@ -27,8 +27,7 @@ def restore_pool(
 def restore_pool_d4rl(replay_pool, name):
     import gym
     import d4rl
-    # data = d4rl.qlearning_dataset(gym.make(name))
-    data = gym.make(name).get_dataset()
+    data = d4rl.qlearning_dataset(gym.make(name))
     data['rewards'] = np.expand_dims(data['rewards'], axis=1)
     data['terminals'] = np.expand_dims(data['terminals'], axis=1)
     return data
