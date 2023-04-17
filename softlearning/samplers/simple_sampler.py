@@ -5,7 +5,7 @@ import numpy as np
 from .base_sampler import BaseSampler
 
 def normalize(obs, mean, std):
-    obs_norm = (obs - mean) / std
+    obs_norm = (obs - mean) / (std + 1e-6)
     return obs_norm
 
 class SimpleSampler(BaseSampler):
@@ -56,6 +56,7 @@ class SimpleSampler(BaseSampler):
         else:
             obs_norm = self.env.convert_to_active_observation(self._current_observation)[None]
         action = self.policy.actions_np([obs_norm])[0]
+        action = np.nan_to_num(action)
 
         next_observation, reward, terminal, info = self.env.step(action)
         self._path_length += 1
