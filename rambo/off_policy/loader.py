@@ -27,9 +27,14 @@ def restore_pool(
 def restore_pool_d4rl(replay_pool, name):
     import gym
     import d4rl
-    data = d4rl.qlearning_dataset(gym.make(name))
-    data['rewards'] = np.expand_dims(data['rewards'], axis=1)
-    data['terminals'] = np.expand_dims(data['terminals'], axis=1)
+    data = gym.make(name).get_dataset()
+
+    data["observations"] = data["observations"][data["timeouts"] == False]
+    data["actions"] = data["actions"][data["timeouts"] == False]
+    data["rewards"] = data["rewards"][data["timeouts"] == False].reshape(-1, 1)
+    data["next_observations"] = data["next_observations"][data["timeouts"] == False]
+    data["terminals"] = data["terminals"][data["timeouts"] == False].reshape(-1, 1)
+    
     return data
 
 def normalise_data(data, normalize_states, normalize_rewards, dataset_name, obs_mean=None, obs_std=None):
