@@ -28,8 +28,12 @@ from rambo.utils.logging import Progress
 import rambo.utils.utils as utl
 import rambo.utils.filesystem as filesystem
 import rambo.off_policy.loader as loader
-from rambo.off_policy.loader import restore_pool_d4rl, parse_stacked_trajectories, sample_expert_segments
+from rambo.off_policy.loader import parse_stacked_trajectories, restore_pool_from_d4rl_trajectories, sample_expert_segments
 
+def soft_clamp(x, _min, _max):
+    x = _max - tf.math.softplus(_max - x)
+    x = _min + tf.math.softplus(x - _min)
+    return x
 
 def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, use_done_flag=True, clip=True):
     if use_done_flag:
@@ -42,17 +46,15 @@ def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, use
         rwd = rwd_model([observation, action,])
 
     if clip:
-        rwd = tf.clip_by_value(rwd, -rwd_clip_max, rwd_clip_max)
+        rwd = soft_clamp(rwd, -rwd_clip_max, rwd_clip_max)
     return rwd
 
 def td_target(reward, discount, next_value, terminated, use_done_flag=True):
     value_done = discount / (1 - discount) * reward
     return reward + (1 - terminated) * discount * next_value + use_done_flag * (terminated) * value_done
 
-class RAIL(RLAlgorithm):
-    """ Robust inverse reinforcement learning
-    """
-
+class RIRL(RLAlgorithm):
+    """ Robust inverse reinforcement learning """
     def __init__(
             self,
             training_environment,
@@ -77,8 +79,9 @@ class RAIL(RLAlgorithm):
             rwd_rollout_length=100,
             rwd_udpate_method='traj',
             rwd_lr=1e-4,
-            rwd_steps=50,
+            rwd_update_steps=50,
             grad_penalty=1.,
+            l2_penalty=0.001,
 
             train_adversarial=True,
             start_adv_train_epoch=0,
@@ -90,6 +93,8 @@ class RAIL(RLAlgorithm):
             use_state_action_baseline=True,
             evaluate_interval=10,
             update_adv_ratio=1.0,
+            adv_update_steps=50,
+            adv_rollout_length=10,
             normalize_states=True,
             normalize_rewards=False,
 
@@ -100,6 +105,7 @@ class RAIL(RLAlgorithm):
             discount=0.99,
             tau=5e-3,
             alpha=0.2,
+            min_alpha=0.001,
             auto_alpha=False,
             target_update_interval=1,
             action_prior='uniform',
@@ -112,7 +118,7 @@ class RAIL(RLAlgorithm):
 
             deterministic=False,
             rollout_random=False,
-            model_train_freq=250,
+            model_rollout_freq=250,
             num_networks=7,
             num_elites=5,
             model_retain_epochs=20,
@@ -132,7 +138,7 @@ class RAIL(RLAlgorithm):
             checkpoint_load_dir=None,
             **kwargs,
     ):
-        super(RAIL, self).__init__(**kwargs)
+        super(RIRL, self).__init__(**kwargs)
         self._obs_dim = np.prod(training_environment.active_observation_shape)
         self._act_dim = np.prod(training_environment.action_space.shape)
         self._model_type = model_type
@@ -156,7 +162,7 @@ class RAIL(RLAlgorithm):
         self._max_model_t = max_model_t
 
         self._model_retain_epochs = model_retain_epochs
-        self._model_train_freq = model_train_freq
+        self._model_rollout_freq = model_rollout_freq
         self._rollout_batch_size = int(rollout_batch_size)
         self._deterministic = deterministic
         self._rollout_random = rollout_random
@@ -172,13 +178,14 @@ class RAIL(RLAlgorithm):
         self._rwd_clip_max = algo_params["rwd_clip_max"]
         self._rwd_rollout_batch_size = algo_params["rwd_rollout_batch_size"]
         self._rwd_rollout_length = algo_params["rwd_rollout_length"]
-        self._rwd_steps = algo_params["rwd_steps"]
+        self._rwd_update_steps = algo_params["rwd_update_steps"]
         self._rwd_rollout_batch_size = max(
             self._rwd_rollout_batch_size, 
-            int(self.sampler._batch_size * self._rwd_steps // self._rwd_rollout_length)
+            int(self.sampler._batch_size * self._rwd_update_steps // self._rwd_rollout_length)
         )
         self._rwd_lr = algo_params["rwd_lr"]
         self._grad_penalty = algo_params["grad_penalty"]
+        self._l2_penalty = algo_params["l2_penalty"]
 
         if self._rwd_done_flag:
             self._reward = feedforward_model(
@@ -204,6 +211,8 @@ class RAIL(RLAlgorithm):
         self._use_state_action_baseline = use_state_action_baseline
         self._adv_epoch = 0.
         self._update_adv_ratio = update_adv_ratio
+        self._adv_update_steps = adv_update_steps
+        self._adv_rollout_length = adv_rollout_length
 
         if self._adversary_loss_weighting == 0:
             self._train_adversarial = False
@@ -247,6 +256,7 @@ class RAIL(RLAlgorithm):
 
         self._reward_scale = reward_scale
         self._alpha = alpha
+        self._min_alpha = min_alpha
         self._auto_alpha = auto_alpha
         self._target_entropy = (
             -np.prod(self._training_environment.action_space.shape)
@@ -312,13 +322,10 @@ class RAIL(RLAlgorithm):
                 self._pool._action_space,
                 2e6
             )
-            
-            loader.restore_pool(
+            restore_pool_from_d4rl_trajectories(
                 self._expert_pool,
                 self._expert_load_path,
-                save_path=self._log_dir,
-                normalize_states=True,
-                normalize_rewards=True,
+                num_expert_traj,
                 obs_mean=obs_mean,
                 obs_std=obs_std
             )
@@ -327,7 +334,7 @@ class RAIL(RLAlgorithm):
         self._reward_pool = SimpleReplayPool(
             self._pool._observation_space,
             self._pool._action_space,
-            self._rwd_steps * self.sampler._batch_size * self._model_retain_epochs
+            self._rwd_update_steps * self.sampler._batch_size * self._model_retain_epochs
         )
         
         self._checkpoint_load_dir = checkpoint_load_dir
@@ -375,7 +382,7 @@ class RAIL(RLAlgorithm):
         #### model training
         print('[ RAMBO ] log_dir: {} | ratio: {}'.format(self._log_dir, self._real_ratio))
         print('[ RAMBO ] Training model at epoch {} | freq {} | timestep {} (total: {})'.format(
-            self._epoch, self._model_train_freq, self._timestep, self._total_timestep)
+            self._epoch, self._model_rollout_freq, self._timestep, self._total_timestep)
         )
 
         max_epochs = 1 if self._model.model_loaded else self.dynamics_pretrain_epochs
@@ -392,8 +399,6 @@ class RAIL(RLAlgorithm):
         self._init_reward_update()
         self._init_adversarial_model_update()
         gt.stamp('epoch_train_model')
-        rwd_loss = np.nan
-        adv_stats = {}
         ####
 
 
@@ -418,7 +423,7 @@ class RAIL(RLAlgorithm):
                     gt.stamp('timestep_before_hook')
 
                     ## model rollouts
-                    if timestep % self._model_train_freq == 0 and self._real_ratio < 1.0:
+                    if timestep % self._model_rollout_freq == 0 and self._real_ratio < 1.0:
                         self._reallocate_model_pool()
                         model_rollout_metrics, _ = self._rollout_model(
                             self._model_pool,
@@ -438,95 +443,93 @@ class RAIL(RLAlgorithm):
                     self._timestep_after_hook()
                     gt.stamp('timestep_after_hook')
 
-                training_paths = self.sampler.get_last_n_paths(
-                    math.ceil(self._epoch_length / self.sampler._max_path_length))
-
-                if self._epoch % self._evaluate_interval == 0 \
-                    or self._epoch >= self._n_epochs - self._avg_returns_num_iter:
-                    evaluation_paths = self._evaluation_paths(
-                        policy,
-                        evaluation_environment,
-                        self._obs_mean,
-                        self._obs_std
-                    )
-                    gt.stamp('evaluation_paths')
-
-                    evaluation_metrics = self._evaluate_rollouts(
-                        evaluation_paths, evaluation_environment)
-                    gt.stamp('evaluation_metrics')
-                else:
-                    evaluation_metrics = {}
-
-                gt.stamp('epoch_after_hook')
-
-                sampler_diagnostics = self.sampler.get_diagnostics()
-
-                diagnostics = self.get_diagnostics(
-                    iteration=self._total_timestep,
-                    batch=self._evaluation_batch(),
-                    training_paths=training_paths)
-
-                time_diagnostics = gt.get_times().stamps.itrs
-
-                diagnostics.update(OrderedDict((
-                    *(
-                        (f'evaluation/{key}', evaluation_metrics[key])
-                        for key in sorted(evaluation_metrics.keys())
-                    ),
-                    *(
-                        (f'times/{key}', time_diagnostics[key][-1])
-                        for key in sorted(time_diagnostics.keys())
-                    ),
-                    *(
-                        (f'sampler/{key}', sampler_diagnostics[key])
-                        for key in sorted(sampler_diagnostics.keys())
-                    ),
-                    ('epoch', self._epoch),
-                    ('timestep', self._timestep),
-                    ('timesteps_total', self._total_timestep),
-                    ('train-steps', self._num_train_steps),
-                    *(
-                        (f'model/{key}', model_metrics[key])
-                        for key in sorted(model_metrics.keys())
-                    ),
-                )))
-
-                for iter in self._n_iters_qvar:
-                    diagnostics.update({
-                        f'qvar/Q-var-{str(iter)}-iter': np.std(np.array(self._Q_avgs[max(self._epoch - iter, 0):]))**2
-                    })
-
-                current_losses = self._model.validate()
-                for i in range(len(current_losses)):
-                    diagnostics.update({'model/current_val_loss_' + str(i): current_losses[i]})
-                diagnostics.update({'model/current_val_loss_avg': current_losses.mean()})
-                diagnostics.update({'reward/loss': rwd_loss})
-                diagnostics.update(adv_stats)
-
-                self._writer.add_dict(diagnostics, self._epoch)
-                self._save_checkpoint()
-
-                for item in diagnostics.items():
-                    print(item)
-
-                if self._eval_render_mode is not None and hasattr(
-                        evaluation_environment, 'render_rollouts'):
-                    training_environment.render_rollouts(evaluation_paths)
-
-                ## ensure we did not collect any more data
-                assert self._pool.size == self._init_pool_size
-
-                yield diagnostics
-            
-            # reward training loop
-            print("[ Reward Rollout ]")
-            rwd_loss = self._train_reward()
-
-            # adversarial training loop
+            # reward and dynamics training loop
             while self._adv_epoch < self._update_adv_ratio * self._epoch:
+                rwd_stats = self._train_reward()
                 adv_stats = self._train_adversary()
                 self._adv_epoch += 1
+        
+            # logging ops
+            training_paths = self.sampler.get_last_n_paths(
+                math.ceil(self._epoch_length / self.sampler._max_path_length))
 
+            if self._epoch % self._evaluate_interval == 0 \
+                or self._epoch >= self._n_epochs - self._avg_returns_num_iter:
+                evaluation_paths = self._evaluation_paths(
+                    policy,
+                    evaluation_environment,
+                    self._obs_mean,
+                    self._obs_std
+                )
+                gt.stamp('evaluation_paths')
+
+                evaluation_metrics = self._evaluate_rollouts(
+                    evaluation_paths, evaluation_environment)
+                gt.stamp('evaluation_metrics')
+            else:
+                evaluation_metrics = {}
+
+            gt.stamp('epoch_after_hook')
+
+            sampler_diagnostics = self.sampler.get_diagnostics()
+
+            diagnostics = self.get_diagnostics(
+                iteration=self._total_timestep,
+                batch=self._evaluation_batch(),
+                training_paths=training_paths)
+
+            time_diagnostics = gt.get_times().stamps.itrs
+
+            diagnostics.update(OrderedDict((
+                *(
+                    (f'evaluation/{key}', evaluation_metrics[key])
+                    for key in sorted(evaluation_metrics.keys())
+                ),
+                *(
+                    (f'times/{key}', time_diagnostics[key][-1])
+                    for key in sorted(time_diagnostics.keys())
+                ),
+                *(
+                    (f'sampler/{key}', sampler_diagnostics[key])
+                    for key in sorted(sampler_diagnostics.keys())
+                ),
+                ('epoch', self._epoch),
+                ('timestep', self._timestep),
+                ('timesteps_total', self._total_timestep),
+                ('train-steps', self._num_train_steps),
+                *(
+                    (f'model/{key}', model_metrics[key])
+                    for key in sorted(model_metrics.keys())
+                ),
+            )))
+
+            for iter in self._n_iters_qvar:
+                diagnostics.update({
+                    f'qvar/Q-var-{str(iter)}-iter': np.std(np.array(self._Q_avgs[max(self._epoch - iter, 0):]))**2
+                })
+
+            current_losses = self._model.validate()
+            for i in range(len(current_losses)):
+                diagnostics.update({'model/current_val_loss_' + str(i): current_losses[i]})
+            diagnostics.update({'model/current_val_loss_avg': current_losses.mean()})
+            diagnostics.update(adv_stats)
+            diagnostics.update(rwd_stats)
+
+            self._writer.add_dict(diagnostics, self._epoch)
+            self._save_checkpoint()
+
+            for item in diagnostics.items():
+                print(item)
+
+            if self._eval_render_mode is not None and hasattr(
+                    evaluation_environment, 'render_rollouts'):
+                training_environment.render_rollouts(evaluation_paths)
+
+            ## ensure we did not collect any more data
+            assert self._pool.size == self._init_pool_size
+
+            yield diagnostics
+        
         self.sampler.terminate()
 
         self._training_after_hook()
@@ -534,6 +537,7 @@ class RAIL(RLAlgorithm):
         yield {'done': True, **diagnostics}
     
     def _train_reward(self):
+        print("[ Reward Rollout ]")
         if self._rwd_update_method == 'traj':
             rwd_loss = self._train_reward_traj()
         else:
@@ -542,7 +546,8 @@ class RAIL(RLAlgorithm):
     
     def _train_reward_traj(self):
         rwd_loss_epoch = []
-        for i in range(self._rwd_steps):
+        decay_loss_epoch = []
+        for i in range(self._rwd_update_steps):
             real_obs, real_act, real_done = sample_expert_segments(
                 self._expert_trajectories, 
                 self._rwd_rollout_batch_size, 
@@ -569,14 +574,18 @@ class RAIL(RLAlgorithm):
                 self._fake_terminals_ph: fake_done,
             }
             # get stats
-            real_rwd, fake_rwd, _ = self._session.run(
-                (self._real_rwd, self._fake_rwd, self._reward_train_op), 
+            rwd_loss, decay_loss, _ = self._session.run(
+                (self._rwd_loss, self._decay_loss, self._rwd_train_op), 
                 feed_dict
             )
-            rwd_loss = np.mean(real_rwd) - np.mean(fake_rwd)
             rwd_loss_epoch.append(rwd_loss)
+            decay_loss_epoch.append(decay_loss)
 
-        return np.mean(rwd_loss_epoch)
+        stats = {
+            "rwd_loss": np.mean(rwd_loss_epoch), 
+            "decay_loss": np.mean(decay_loss_epoch), 
+        }
+        return stats
     
     def _train_reward_marginal(self):
         self._rollout_model(
@@ -587,7 +596,8 @@ class RAIL(RLAlgorithm):
         )
     
         rwd_loss_epoch = []
-        for i in range(self._rwd_steps):
+        gp_loss_epoch = []
+        for i in range(self._rwd_update_steps):
             real_batch = self._expert_pool.random_batch(int(self.sampler._batch_size/2))
             fake_batch = self._reward_pool.random_batch(int(self.sampler._batch_size/2))
             feed_dict = {
@@ -600,14 +610,18 @@ class RAIL(RLAlgorithm):
             }
 
             # get stats
-            real_rwd, fake_rwd, _ = self._session.run(
-                (self._real_rwd, self._fake_rwd, self._reward_train_op), 
+            rwd_loss, gp, _ = self._session.run(
+                (self._rwd_loss, self._gp, self._rwd_train_op), 
                 feed_dict
             )
-            rwd_loss = np.mean(real_rwd, axis=0) - np.mean(fake_rwd, axis=0)
             rwd_loss_epoch.append(rwd_loss)
+            gp_loss_epoch.append(gp)
 
-        return np.mean(rwd_loss_epoch)
+        stats = {
+            "rwd_loss": np.mean(rwd_loss_epoch), 
+            "gp_loss": np.mean(gp_loss_epoch), 
+        }
+        return stats
 
     def _train_adversary(self):
         """ train adversarial model using on-policy updates.
@@ -618,10 +632,10 @@ class RAIL(RLAlgorithm):
         adv_loss = []
         obs_loss = []
         steps = 0
-        while steps < self._epoch_length:
-            batch = self.sampler.random_batch(self.sampler._batch_size)
+        while steps < self._adv_update_steps:
+            batch = self._model_pool.random_batch(self.sampler._batch_size)
             obs = batch['observations']
-            for t in range(self._rollout_length):
+            for t in range(self._adv_rollout_length):
                 act = self._policy.actions_np(obs)
                 inputs, targets = self._model.get_labeled_batch()
                 feed_dict = {
@@ -632,7 +646,12 @@ class RAIL(RLAlgorithm):
                 }
 
                 next_obs, adv_obj, supervised_loss, _ = self._session.run(
-                    (self._next_obs, self._adv_objective, self._supervised_loss, self._adversarial_train_op),
+                    (
+                        self._next_obs, 
+                        self._adv_objective, 
+                        self._supervised_loss, 
+                        self._adversarial_train_op
+                    ),
                     feed_dict
                 )
 
@@ -642,7 +661,7 @@ class RAIL(RLAlgorithm):
                 obs = next_obs
 
                 steps += 1
-                if steps == self._epoch_length:
+                if steps == self._adv_update_steps:
                     break
         return {"adv_loss": np.mean(adv_loss), "obs_loss": np.mean(obs_loss)}
 
@@ -709,7 +728,7 @@ class RAIL(RLAlgorithm):
         obs_space = self._pool._observation_space
         act_space = self._pool._action_space
 
-        rollouts_per_epoch = self._rollout_batch_size * self._epoch_length / self._model_train_freq
+        rollouts_per_epoch = self._rollout_batch_size * self._epoch_length / self._model_rollout_freq
         model_steps_per_epoch = int(self._rollout_length * rollouts_per_epoch)
         new_pool_size = self._model_retain_epochs * model_steps_per_epoch
 
@@ -956,19 +975,19 @@ class RAIL(RLAlgorithm):
             self._real_observations_ph = tf.placeholder(
                 tf.float32,
                 shape=(None, None, *self._observation_shape),
-                name='fake_observation',
+                name='real_observation',
             )
 
             self._real_actions_ph = tf.placeholder(
                 tf.float32,
                 shape=(None, None, *self._action_shape),
-                name='fake_actions',
+                name='real_actions',
             )
 
             self._real_terminals_ph = tf.placeholder(
                 tf.float32,
                 shape=(None, None, 1),
-                name='fake_terminals',
+                name='real_terminals',
             )
 
             self._fake_observations_ph = tf.placeholder(
@@ -992,19 +1011,19 @@ class RAIL(RLAlgorithm):
             self._real_observations_ph = tf.placeholder(
                 tf.float32,
                 shape=(None, *self._observation_shape),
-                name='fake_observation',
+                name='real_observation',
             )
 
             self._real_actions_ph = tf.placeholder(
                 tf.float32,
                 shape=(None, *self._action_shape),
-                name='fake_actions',
+                name='real_actions',
             )
 
             self._real_terminals_ph = tf.placeholder(
                 tf.float32,
                 shape=(None, 1),
-                name='fake_terminals',
+                name='real_terminals',
             )
 
             self._fake_observations_ph = tf.placeholder(
@@ -1038,7 +1057,7 @@ class RAIL(RLAlgorithm):
             )
 
     def _get_Q_target(self):
-        reward = tf.stop_gradient(compute_reward(
+        reward = tf.stop_gradient(self._reward_scale * compute_reward(
             self._observations_ph, 
             self._actions_ph,
             self._terminals_ph,
@@ -1167,7 +1186,7 @@ class RAIL(RLAlgorithm):
             })
 
         if self._auto_alpha:
-            alpha = tf.exp(log_alpha)
+            alpha = tf.clip_by_value(tf.exp(log_alpha), self._min_alpha, 1.)
             self._alpha = alpha
         else:
             alpha = tf.convert_to_tensor(
@@ -1217,37 +1236,37 @@ class RAIL(RLAlgorithm):
     
     def _init_reward_update(self):
         # compute reward loss
-        real_rwd = self._real_rwd = compute_reward(
+        real_rwd = self._real_rwd = self._reward_scale * compute_reward(
             self._real_observations_ph, 
             self._real_actions_ph,
             self._real_terminals_ph,
             self._rwd_clip_max,
             self._reward,
             self._rwd_done_flag,
-            clip=False
+            clip=True
         )
-        fake_rwd = self._fake_rwd = compute_reward(
+        fake_rwd = self._fake_rwd = self._reward_scale * compute_reward(
             self._fake_observations_ph, 
             self._fake_actions_ph,
             self._fake_terminals_ph,
             self._rwd_clip_max,
             self._reward,
             self._rwd_done_flag,
-            clip=False
+            clip=True
         )
         if self._rwd_update_method == "traj":
             gamma = self._discount ** np.arange(self._rwd_rollout_length).reshape(1, -1, 1)
-            reward_loss = -(
+            reward_loss = self._rwd_loss = -(
                 tf.reduce_mean(tf.reduce_sum(gamma * real_rwd, axis=1), axis=0) \
                 - tf.reduce_mean(tf.reduce_sum(gamma * fake_rwd, axis=1), axis=0)
-            ) #/ self._rwd_rollout_length
+            )
 
             rwd_vars = self._reward.trainable_variables
-            decay_loss = tf.add_n([ tf.nn.l2_loss(v) for v in rwd_vars ]) * 0.001
+            decay_loss = self._decay_loss = tf.add_n([tf.nn.l2_loss(v) for v in rwd_vars])
             
-            total_loss = reward_loss + decay_loss
+            total_loss = reward_loss + self._l2_penalty * decay_loss
         else:
-            reward_loss = -(tf.reduce_mean(real_rwd, axis=0) - tf.reduce_mean(fake_rwd, axis=0))
+            reward_loss = self._rwd_loss = -(tf.reduce_mean(real_rwd, axis=0) - tf.reduce_mean(fake_rwd, axis=0))
 
             # compute gradient penalty
             epsilon = tf.random_uniform([], 0.0, 1.0)
@@ -1264,12 +1283,12 @@ class RAIL(RLAlgorithm):
                     self._reward([interp_observations, interp_actions]), 
                     [interp_observations, interp_actions]
                 )[0]
-            grad_penalty = tf.reduce_mean(tf.square(tf.norm(grad, ord=2) - 1))
+            grad_penalty = self._gp = tf.reduce_mean(tf.square(tf.norm(grad, ord=2) - 1))
 
             total_loss = reward_loss + self._grad_penalty * grad_penalty
 
         self._rwd_optimizer = tf.train.AdamOptimizer(learning_rate=self._rwd_lr)
-        self._reward_train_op = self._rwd_optimizer.minimize(
+        self._rwd_train_op = self._rwd_optimizer.minimize(
             total_loss,
             var_list=self._reward.trainable_variables
         )
@@ -1278,26 +1297,6 @@ class RAIL(RLAlgorithm):
     def _init_adversarial_model_update(self):
         """ Initialise update to adversarially modify the model.
         """
-        inputs = tf.concat([self._observations_ph, self._actions_ph], -1)
-        ensemble_model_means, ensemble_model_vars = self._model._compile_outputs(inputs)
-        batch_size = self.sampler._batch_size
-
-        # because model predicts deltas for observations add original obs
-        rewards_means = ensemble_model_means[:, :, 0:1]
-        ensemble_model_means = tf.concat([rewards_means, ensemble_model_means[:,:,1:]+self._observations_ph], -1)
-        ensemble_model_stds = tf.math.sqrt(ensemble_model_vars)
-        shape = tf.TensorShape([ensemble_model_means.shape[0], batch_size, ensemble_model_means.shape[2]])
-        ensemble_samples = tf.stop_gradient(ensemble_model_means + tf.random.normal(shape) * ensemble_model_stds)
-
-        # use one model from ensemble
-        model_inds = self._model.random_inds(batch_size).astype(int)
-        model_inds = [[model_inds[i], i] for i in range(len(model_inds))]
-        samples = self._samples = tf.gather_nd(ensemble_samples, model_inds)
-        self._model_stds = tf.gather_nd(ensemble_model_stds, model_inds)
-        # rewards = tf.squeeze(samples[:, :1])
-        next_obs = self._next_obs = samples[:, 1:]
-
-        # compute log probability of successor state
         def get_log_prob(states, means, stds):
             distribution = tfp.distributions.MultivariateNormalDiag(
                 loc=means,
@@ -1305,76 +1304,104 @@ class RAIL(RLAlgorithm):
             )
             state_log_prob = distribution.log_prob(states)[:]
             return state_log_prob
+        
+        def sample_next_obs(obs, act):
+            inputs = tf.concat([obs, act], -1)
+            ensemble_model_means, ensemble_model_vars = self._model._compile_outputs(inputs)
+            batch_size = self.sampler._batch_size
 
-        # log prob for all ensemble members
-        log_prob = self._log_prob = get_log_prob(
-            samples,
-            ensemble_model_means,
-            ensemble_model_stds
+            # because model predicts deltas for observations add original obs
+            ensemble_model_means = ensemble_model_means[:,:,1:]+self._observations_ph
+            ensemble_model_stds = tf.math.sqrt(ensemble_model_vars[:, :, 1:])
+            shape = tf.TensorShape([ensemble_model_means.shape[0], batch_size, ensemble_model_means.shape[2]])
+            ensemble_samples = tf.stop_gradient(ensemble_model_means + tf.random.normal(shape) * ensemble_model_stds)
+
+            # use one model from ensemble
+            model_inds = self._model.random_inds(batch_size).astype(int)
+            model_inds = [[model_inds[i], i] for i in range(len(model_inds))]
+            samples = tf.gather_nd(ensemble_samples, model_inds)
+            self._model_stds = ensemble_model_stds
+            next_obs = samples
+            
+            # use terminals like mopo
+            terminals = self._terminals = self.fake_env.config.termination_fn_tf(
+                utl.unnormalize(obs, self._obs_mean, self._obs_std),
+                act,
+                utl.unnormalize(next_obs, self._obs_mean, self._obs_std)
+            )
+            done = tf.expand_dims(terminals, axis=-1)
+
+            # compute mixture log prob
+            log_prob = get_log_prob(
+                samples,
+                ensemble_model_means,
+                ensemble_model_stds
+            )
+
+            # extract only the data from elites
+            elite_inds = self._model.get_elite_inds()
+            log_prob = tf.gather(log_prob, elite_inds, axis=0)
+
+            # correct for fact that transition is sampled uniformly from elites
+            prob = tf.math.exp(tf.cast(log_prob, tf.float64))
+            prob = prob * (1/len(elite_inds))
+            prob = tf.reduce_sum(prob, axis=0)
+            log_prob = tf.cast(tf.math.log(prob), tf.float32)
+            
+            return next_obs, done, log_prob
+
+        def compute_advantage(obs, act, next_obs, done):
+            with self._policy.set_deterministic(True):
+                next_actions = tf.stop_gradient(self._policy.actions([next_obs]))
+
+            next_Qs_values = tuple(
+                tf.stop_gradient(Q([next_obs, next_actions]))
+                for Q in self._Qs)
+
+            min_next_Q = tf.squeeze(tf.reduce_min(next_Qs_values, axis=0))
+
+            # whether to include the entropy bonus at the next state in advantage calc
+            if self._include_entropy_in_adv:
+                next_log_pis = tf.stop_gradient(self._policy.log_pis([next_obs], next_actions))
+                next_value = min_next_Q - self._alpha * next_log_pis
+            else:
+                next_value = min_next_Q
+            
+            rewards = tf.stop_gradient(self._reward_scale * compute_reward(
+                obs, 
+                act,
+                done,
+                self._rwd_clip_max,
+                self._reward,
+                self._rwd_done_flag,
+                clip=True
+            )) # reward edit
+            value = tf.stop_gradient(td_target(
+                reward=rewards,
+                discount=self._discount,
+                next_value=next_value,
+                terminated=done,
+                use_done_flag=self._rwd_done_flag
+            )) # reward edit
+
+            pred_Qs_values = tuple(tf.stop_gradient(Q([obs, act])) for Q in self._Qs)
+            pred_value = tf.squeeze(tf.reduce_min(pred_Qs_values, axis=0))
+
+            # normalise advantages using batch mean and std
+            advantages = value - pred_value
+            advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
+            return advantages
+        
+        next_obs, done, log_prob = sample_next_obs(self._observations_ph, self._actions_ph)
+        self._next_obs = next_obs
+
+        advantages = compute_advantage(
+            self._observations_ph, self._actions_ph, next_obs, done
         )
-
-        # extract only the data from elites
-        elite_inds = self._model.get_elite_inds()
-        log_prob = tf.gather(log_prob, elite_inds, axis=0)
-
-        # correct for fact that transition is sampled uniformly from elites
-        prob = tf.math.exp(tf.cast(log_prob, tf.float64))
-        prob = prob * (1/len(elite_inds))
-        prob = self._prob_corrected = tf.reduce_sum(prob, axis=0)
-        log_prob = self._log_prob_corrected = tf.cast(tf.math.log(prob), tf.float32)
-
-        with self._policy.set_deterministic(True):
-            next_actions = tf.stop_gradient(self._policy.actions([next_obs]))
-        next_Qs_values = tuple(
-            tf.stop_gradient(Q([next_obs, next_actions]))
-            for Q in self._Qs)
-
-        min_next_Q = self._next_Q = tf.squeeze(tf.reduce_min(next_Qs_values, axis=0))
-
-        # whether to include the entropy bonus at the next state in advantage calc
-        if self._include_entropy_in_adv:
-            next_log_pis = tf.stop_gradient(self._policy.log_pis([next_obs], next_actions))
-            next_value = min_next_Q - self._alpha * next_log_pis
-        else:
-            next_value = min_next_Q
-
-        # use terminals like mopo
-        terminals = self._terminals = self.fake_env.config.termination_fn_tf(
-            utl.unnormalize(self._observations_ph, self._obs_mean, self._obs_std),
-            self._actions_ph,
-            utl.unnormalize(next_obs, self._obs_mean, self._obs_std)
-        )
-        done_mask = self._dones = tf.expand_dims(tf.ones_like(terminals) - terminals, axis=-1)
-
-        rewards = tf.stop_gradient(compute_reward(
-            self._observations_ph, 
-            self._actions_ph,
-            done_mask,
-            self._rwd_clip_max,
-            self._reward,
-            self._rwd_done_flag,
-            clip=True
-        )) # reward edit
-        value = self._value = tf.stop_gradient(td_target(
-            reward=rewards,
-            discount=self._discount,
-            next_value=next_value,
-            terminated=done_mask,
-            use_done_flag=self._rwd_done_flag
-        )) # reward edit
-
-        pred_Qs_values = tuple(
-            tf.stop_gradient(Q([self._observations_ph, self._actions_ph]))
-            for Q in self._Qs)
-        pred_value = self._pred_value = tf.squeeze(tf.reduce_min(pred_Qs_values, axis=0))
-
-        # normalise advantages using batch mean and std
-        advantages = self._advantages = value - pred_value
-        advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
+        
         adv_objective = self._adv_objective = tf.reduce_mean(advantages * log_prob)
-
-        # total loss includes mle loss + lambda * adversarial loss
         supervised_loss = self._supervised_loss = self._supervised_loss = self._model.train_loss
+        
         total_loss = adv_objective * self._adversary_loss_weighting + supervised_loss
 
         self._adv_optimizer = tf.train.AdamOptimizer(learning_rate=self._adv_lr)
