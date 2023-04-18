@@ -47,17 +47,18 @@ def restore_pool_from_d4rl_trajectories(expert_pool, expert_load_path, num_exper
         obs_mean=obs_mean, obs_std=obs_std
     )
     keys = list(expert_trajectories[0].keys())
-    expert_trajectories = {k:np.vstack([d[k] for d in expert_trajectories]) for k in keys}
+    stacked_expert_trajectories = {k:np.vstack([d[k] for d in expert_trajectories]) for k in keys}
     
-    data["observations"] = expert_trajectories["obs"]
-    data["actions"] = expert_trajectories["act"]
-    data["rewards"] = expert_trajectories["rwd"]
-    data["next_observations"] = expert_trajectories["next_obs"]
-    data["terminals"] = expert_trajectories["done"]
-    data["timeouts"] = expert_trajectories["done"]
+    data["observations"] = stacked_expert_trajectories["obs"]
+    data["actions"] = stacked_expert_trajectories["act"]
+    data["rewards"] = stacked_expert_trajectories["rwd"]
+    data["next_observations"] = stacked_expert_trajectories["next_obs"]
+    data["terminals"] = stacked_expert_trajectories["done"]
+    data["timeouts"] = stacked_expert_trajectories["done"]
     
     expert_pool.add_samples(data)
     print(f"loaded {len(data['observations'])} expert transitions")
+    return expert_trajectories
 
 def normalise_data(data, normalize_states, normalize_rewards, dataset_name, obs_mean=None, obs_std=None):
     # obs_mean = None

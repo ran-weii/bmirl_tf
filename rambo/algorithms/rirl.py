@@ -306,29 +306,19 @@ class RIRL(RLAlgorithm):
         # additional pools
         self._expert_load_path = expert_load_path
         print("loading expert pool from", self._expert_load_path)
-        if self._rwd_update_method == 'traj':
-            import gym
-            data = gym.make(self._expert_load_path[5:]).get_dataset()
-            data['rewards'] = np.expand_dims(data['rewards'], axis=1)
-            data['terminals'] = np.expand_dims(data['terminals'], axis=1)
-            self._expert_trajectories = parse_stacked_trajectories(
-                data, max_eps=num_expert_traj, skip_terminated=True, 
-                obs_mean=obs_mean, obs_std=obs_std
-            )
-            print(f"loaded {len(self._expert_trajectories)} expert trajectories")
-        else:
-            self._expert_pool = SimpleReplayPool(
-                self._pool._observation_space,
-                self._pool._action_space,
-                2e6
-            )
-            restore_pool_from_d4rl_trajectories(
-                self._expert_pool,
-                self._expert_load_path,
-                num_expert_traj,
-                obs_mean=obs_mean,
-                obs_std=obs_std
-            )
+
+        self._expert_pool = SimpleReplayPool(
+            self._pool._observation_space,
+            self._pool._action_space,
+            2e6
+        )
+        self._expert_trajectories = restore_pool_from_d4rl_trajectories(
+            self._expert_pool,
+            self._expert_load_path,
+            num_expert_traj,
+            obs_mean=obs_mean,
+            obs_std=obs_std
+        )
         
         # pool for storing reward rollout samples
         self._reward_pool = SimpleReplayPool(
@@ -913,9 +903,9 @@ class RIRL(RLAlgorithm):
             mae_per_action: the mean absolute error for each action dimension
             of the policy actions versus the dataset actions.
         """
-        env_batch = self._real_data_batch()
-        observations = env_batch["observations"]
-        dataset_actions = env_batch["actions"]
+        expert_batch = self._expert_pool.random_batch(self.sampler._batch_size)
+        observations = expert_batch["observations"]
+        dataset_actions = expert_batch["actions"]
         with self._policy.set_deterministic(True):
             policy_actions = self._policy.actions_np(observations)
         mae_per_action = (np.abs(dataset_actions - policy_actions)).mean(axis=0)

@@ -947,9 +947,9 @@ class BIRL(RLAlgorithm):
             mae_per_action: the mean absolute error for each action dimension
             of the policy actions versus the dataset actions.
         """
-        env_batch = self._real_data_batch()
-        observations = env_batch["observations"]
-        dataset_actions = env_batch["actions"]
+        expert_batch = self._expert_pool.random_batch(self.sampler._batch_size)
+        observations = expert_batch["observations"]
+        dataset_actions = expert_batch["actions"]
         with self._policy.set_deterministic(True):
             policy_actions = self._policy.actions_np(observations)
         mae_per_action = (np.abs(dataset_actions - policy_actions)).mean(axis=0)
