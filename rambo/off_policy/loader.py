@@ -37,6 +37,28 @@ def restore_pool_d4rl(replay_pool, name):
     
     return data
 
+def restore_pool_from_d4rl_trajectories(expert_pool, expert_load_path, num_expert_traj, obs_mean=None, obs_std=None):
+    import gym
+    data = gym.make(expert_load_path[5:]).get_dataset()
+    data['rewards'] = np.expand_dims(data['rewards'], axis=1)
+    data['terminals'] = np.expand_dims(data['terminals'], axis=1)
+    expert_trajectories = parse_stacked_trajectories(
+        data, max_eps=num_expert_traj, skip_terminated=True, 
+        obs_mean=obs_mean, obs_std=obs_std
+    )
+    keys = list(expert_trajectories[0].keys())
+    expert_trajectories = {k:np.vstack([d[k] for d in expert_trajectories]) for k in keys}
+    
+    data["observations"] = expert_trajectories["obs"]
+    data["actions"] = expert_trajectories["act"]
+    data["rewards"] = expert_trajectories["rwd"]
+    data["next_observations"] = expert_trajectories["next_obs"]
+    data["terminals"] = expert_trajectories["done"]
+    data["timeouts"] = expert_trajectories["done"]
+    
+    expert_pool.add_samples(data)
+    print(f"loaded {len(data['observations'])} expert transitions")
+
 def normalise_data(data, normalize_states, normalize_rewards, dataset_name, obs_mean=None, obs_std=None):
     # obs_mean = None
     # obs_std = None
