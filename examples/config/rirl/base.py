@@ -25,8 +25,8 @@ base_params = {
         'auto_alpha': True,
         
         # reward args
-        'num_expert_traj': 100,
-        'rwd_done_flag': True,
+        'num_expert_traj': 50,
+        'rwd_done_flag': False,
         'rwd_clip_max': 10,
         'rwd_rollout_batch_size': 64,
         'rwd_rollout_length': 100,
@@ -46,17 +46,19 @@ base_params = {
         
         # dynamics args
         'adversary_loss_weighting': 0.0768,
-        'adv_update_steps': 50,
-        'adv_rollout_length': 10,
+        # 'adv_update_steps': 50,
+        # 'adv_rollout_length': 10,
+        'adv_update_steps': 1000,
+        'adv_rollout_length': 5,
         
         # training args
         'critic_lr': 3e-4,
         'actor_lr': 1e-4,
-        'adv_lr': 1e-4,
+        'adv_lr': 3e-4,
         'rwd_lr': 1e-4,
         'real_ratio': 0.5,
         'train_adversarial': True,
-        'model_rollout_freq': 250,
+        'model_rollout_freq': 1000,
         'model_retain_epochs': 5,
         'rollout_batch_size': 10000,
         'rollout_length': 40,

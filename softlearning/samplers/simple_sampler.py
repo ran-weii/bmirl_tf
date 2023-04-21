@@ -56,7 +56,6 @@ class SimpleSampler(BaseSampler):
         else:
             obs_norm = self.env.convert_to_active_observation(self._current_observation)[None]
         action = self.policy.actions_np([obs_norm])[0]
-        action = np.nan_to_num(action)
 
         next_observation, reward, terminal, info = self.env.step(action)
         self._path_length += 1
