@@ -14,4 +14,5 @@ params['kwargs'].update({
     'rollout_batch_size': 50000,
     'rollout_length': 5,
     'adv_rollout_length': 5,
+    'rwd_done_flag': False,
 })

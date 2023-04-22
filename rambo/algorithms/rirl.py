@@ -620,11 +620,11 @@ class RIRL(RLAlgorithm):
         if (self._epoch < self._start_adv_train_epoch) or not self._train_adversarial:
             return
         
-        adv_loss = []
-        obs_loss = []
+        adv_loss_epoch = []
+        obs_loss_epoch = []
         steps = 0
         while steps < self._adv_update_steps:
-            batch = self._model_pool.random_batch(self.sampler._batch_size)
+            batch = self.sampler.random_batch(self.sampler._batch_size)
             obs = batch['observations']
             for t in range(self._adv_rollout_length):
                 act = self._policy.actions_np(obs)
@@ -636,7 +636,7 @@ class RIRL(RLAlgorithm):
                     self._model.sy_train_targ: targets
                 }
 
-                next_obs, adv_obj, supervised_loss, _ = self._session.run(
+                next_obs, adv_loss, obs_loss, _ = self._session.run(
                     (
                         self._next_obs, 
                         self._adv_objective, 
@@ -646,15 +646,20 @@ class RIRL(RLAlgorithm):
                     feed_dict
                 )
 
-                adv_loss.append(adv_obj)
-                obs_loss.append(supervised_loss)
+                adv_loss_epoch.append(adv_loss)
+                obs_loss_epoch.append(obs_loss)
 
                 obs = next_obs
 
                 steps += 1
                 if steps == self._adv_update_steps:
                     break
-        return {"adv_loss": np.mean(adv_loss), "obs_loss": np.mean(obs_loss)}
+        
+        stats = {
+            "adv_loss": np.mean(adv_loss_epoch), 
+            "obs_loss": np.mean(obs_loss_epoch)
+        }
+        return stats
 
     def train(self, *args, **kwargs):
         return self._train(*args, **kwargs)
@@ -1391,7 +1396,7 @@ class RIRL(RLAlgorithm):
         )
         
         adv_objective = self._adv_objective = tf.reduce_mean(advantages * log_prob)
-        supervised_loss = self._supervised_loss = self._supervised_loss = self._model.train_loss
+        supervised_loss = self._supervised_loss = self._model.train_loss
         
         total_loss = adv_objective * self._adversary_loss_weighting + supervised_loss
 

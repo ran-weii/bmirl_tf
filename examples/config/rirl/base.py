@@ -19,20 +19,20 @@ base_params = {
         # sac args
         'discount': 0.99,
         'tau': 5e-3,
-        'reward_scale': 1.0,
         'alpha': 1.,
         'min_alpha': 0.001,
         'auto_alpha': True,
         
         # reward args
-        'num_expert_traj': 50,
-        'rwd_done_flag': False,
+        'num_expert_traj': 10,
+        'rwd_done_flag': True,
+        'reward_scale': 1.0,
         'rwd_clip_max': 10,
         'rwd_rollout_batch_size': 64,
         'rwd_rollout_length': 100,
         'rwd_update_method': 'traj', # traj or marginal
         'rwd_update_steps': 1,
-        'grad_penalty': 1.,
+        'grad_penalty': 0.,
         'l2_penalty': 0.001,
 
         # 'num_expert_traj': 50,
@@ -45,20 +45,18 @@ base_params = {
         # 'grad_penalty': 1,
         
         # dynamics args
-        'adversary_loss_weighting': 0.0768,
-        # 'adv_update_steps': 50,
-        # 'adv_rollout_length': 10,
-        'adv_update_steps': 1000,
-        'adv_rollout_length': 5,
+        'adversary_loss_weighting': 0.01,
+        'adv_update_steps': 50,
+        'adv_rollout_length': 10,
         
         # training args
         'critic_lr': 3e-4,
-        'actor_lr': 1e-4,
-        'adv_lr': 3e-4,
+        'actor_lr': 3e-4,
+        'adv_lr': 1e-4,
         'rwd_lr': 1e-4,
         'real_ratio': 0.5,
         'train_adversarial': True,
-        'model_rollout_freq': 1000,
+        'model_rollout_freq': 250,
         'model_retain_epochs': 5,
         'rollout_batch_size': 10000,
         'rollout_length': 40,
