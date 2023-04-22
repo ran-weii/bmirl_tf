@@ -47,7 +47,7 @@ def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, use
         rwd = rwd_model([observation, action,])
 
     if clip:
-        rwd = soft_clamp(rwd, -rwd_clip_max, rwd_clip_max)
+        rwd = tf.clip_by_value(rwd, -rwd_clip_max, rwd_clip_max)
     return rwd
 
 def td_target(reward, discount, next_value, terminated, use_done_flag=True):
@@ -646,7 +646,7 @@ class RIRL(RLAlgorithm):
                     feed_dict
                 )
 
-                adv_loss.append(np.mean(adv_obj))
+                adv_loss.append(adv_obj)
                 obs_loss.append(supervised_loss)
 
                 obs = next_obs
@@ -1348,8 +1348,7 @@ class RIRL(RLAlgorithm):
             next_Qs_values = tuple(
                 tf.stop_gradient(Q([next_obs, next_actions]))
                 for Q in self._Qs)
-
-            min_next_Q = tf.squeeze(tf.reduce_min(next_Qs_values, axis=0))
+            min_next_Q = tf.reduce_min(next_Qs_values, axis=0)
 
             # whether to include the entropy bonus at the next state in advantage calc
             if self._include_entropy_in_adv:
@@ -1376,17 +1375,18 @@ class RIRL(RLAlgorithm):
             )) # reward edit
 
             pred_Qs_values = tuple(tf.stop_gradient(Q([obs, act])) for Q in self._Qs)
-            pred_value = tf.squeeze(tf.reduce_min(pred_Qs_values, axis=0))
+            pred_value = tf.reduce_min(pred_Qs_values, axis=0)
 
             # normalise advantages using batch mean and std
-            advantages = value - pred_value
+            advantages = tf.squeeze(value - pred_value)
             advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
             return advantages
         
         next_obs, done, log_prob = sample_next_obs(self._observations_ph, self._actions_ph)
         self._next_obs = next_obs
+        self._log_prob = log_prob
 
-        advantages = compute_advantage(
+        advantages = self._advantages = compute_advantage(
             self._observations_ph, self._actions_ph, next_obs, done
         )
         
