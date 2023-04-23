@@ -24,19 +24,19 @@ base_params = {
         'auto_alpha': True,
         
         # reward args
-        'num_expert_traj': 100,
+        'num_expert_traj': 10,
         'rwd_done_flag': True,
         'reward_scale': 1.0,
         'rwd_clip_max': 10.,
         'rwd_rollout_batch_size': 1000,
-        'rwd_update_steps': 1,
         'rwd_rollout_length': 40,
         'rwd_update_method': 'traj', # traj or marginal
-        'grad_penalty': 4.,
+        'rwd_update_steps': 1,
+        'grad_penalty': 0.,
         'l2_penalty': 0.001,
 
         # dynamics args
-        'adversary_loss_weighting': 0.0768,
+        'adversary_loss_weighting': 0.01,
         'adv_update_steps': 50,
         'adv_rollout_length': 10,
 
@@ -56,7 +56,7 @@ base_params = {
     
         # training args
         'critic_lr': 3e-4,
-        'actor_lr': 1e-4,
+        'actor_lr': 3e-4,
         'adv_lr': 1e-4,
         'rwd_lr': 1e-4,
         'real_ratio': 0.01,

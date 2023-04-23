@@ -46,7 +46,7 @@ def compute_reward(observation, action, terminated, rwd_clip_max, rwd_model, use
         rwd = rwd_model([observation, action,])
 
     if clip:
-        rwd = soft_clamp(rwd, -rwd_clip_max, rwd_clip_max)
+        rwd = tf.clip_by_value(rwd, -rwd_clip_max, rwd_clip_max)
     return rwd
 
 def td_target(reward, discount, next_value, terminated, use_done_flag=True):
@@ -638,6 +638,7 @@ class BIRL(RLAlgorithm):
         }
         return stats
     
+    """ TODO: test adv shapes here """
     def _train_adversary(self):
         """ train adversarial model using on-policy updates.
         """
@@ -1424,8 +1425,7 @@ class BIRL(RLAlgorithm):
             next_Qs_values = tuple(
                 tf.stop_gradient(Q([next_obs, next_actions]))
                 for Q in self._Qs)
-
-            min_next_Q = tf.squeeze(tf.reduce_min(next_Qs_values, axis=0))
+            min_next_Q = tf.reduce_min(next_Qs_values, axis=0)
 
             # whether to include the entropy bonus at the next state in advantage calc
             if self._include_entropy_in_adv:
@@ -1452,10 +1452,10 @@ class BIRL(RLAlgorithm):
             )) # reward edit
 
             pred_Qs_values = tuple(tf.stop_gradient(Q([obs, act])) for Q in self._Qs)
-            pred_value = tf.squeeze(tf.reduce_min(pred_Qs_values, axis=0))
+            pred_value = tf.reduce_min(pred_Qs_values, axis=0)
 
             # normalise advantages using batch mean and std
-            advantages = value - pred_value
+            advantages = tf.squeeze(value - pred_value)
             advantages = tf.stop_gradient((advantages - tf.reduce_mean(advantages)) / tf.math.reduce_std(advantages))
             return advantages
         
@@ -1463,11 +1463,13 @@ class BIRL(RLAlgorithm):
         next_obs_fake, done_fake, log_prob_fake = sample_next_obs(self._fake_observations_ph, self._fake_actions_ph)
         self._next_obs_real = next_obs_real
         self._next_obs_fake = next_obs_fake
+        self._log_prob_real = log_prob_real
+        self._log_prob_fake = log_prob_fake
 
-        advantages_real = compute_advantage(
+        advantages_real = self._advantages_real = compute_advantage(
             self._real_observations_ph, self._real_actions_ph, next_obs_real, done_real
         )
-        advantages_fake = compute_advantage(
+        advantages_fake = self._advantages_fake = compute_advantage(
             self._fake_observations_ph, self._fake_actions_ph, next_obs_fake, done_fake
         )
         
