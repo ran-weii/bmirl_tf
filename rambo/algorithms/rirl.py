@@ -1307,7 +1307,7 @@ class RIRL(RLAlgorithm):
             batch_size = self.sampler._batch_size
 
             # because model predicts deltas for observations add original obs
-            ensemble_model_means = ensemble_model_means[:,:,1:]+self._observations_ph
+            ensemble_model_means = ensemble_model_means[:, :, 1:] + obs
             ensemble_model_stds = tf.math.sqrt(ensemble_model_vars[:, :, 1:])
             shape = tf.TensorShape([ensemble_model_means.shape[0], batch_size, ensemble_model_means.shape[2]])
             ensemble_samples = tf.stop_gradient(ensemble_model_means + tf.random.normal(shape) * ensemble_model_stds)

@@ -638,7 +638,6 @@ class BIRL(RLAlgorithm):
         }
         return stats
     
-    """ TODO: test adv shapes here """
     def _train_adversary(self):
         """ train adversarial model using on-policy updates.
         """
@@ -662,8 +661,6 @@ class BIRL(RLAlgorithm):
                 inputs, targets = self._model.get_labeled_batch()
 
                 feed_dict = {
-                    self._observations_ph: obs_real, # dummy
-                    self._actions_ph: act_real, # dummy
                     self._real_observations_ph: obs_real,
                     self._real_actions_ph: act_real,
                     self._fake_observations_ph: obs_fake,
@@ -1379,7 +1376,7 @@ class BIRL(RLAlgorithm):
             batch_size = self._rwd_rollout_batch_size
 
             # because model predicts deltas for observations add original obs
-            ensemble_model_means = ensemble_model_means[:,:,1:]+self._observations_ph
+            ensemble_model_means = ensemble_model_means[:, :, 1:] + obs
             ensemble_model_stds = tf.math.sqrt(ensemble_model_vars[:, :, 1:])
             shape = tf.TensorShape([ensemble_model_means.shape[0], batch_size, ensemble_model_means.shape[2]])
             ensemble_samples = tf.stop_gradient(ensemble_model_means + tf.random.normal(shape) * ensemble_model_stds)
