@@ -7,7 +7,7 @@ base_params = {
         'log_wandb': False,
 
         'epoch_length': 1000,
-        'n_epochs': 300,
+        'n_epochs': 500,
         'train_every_n_steps': 1,
         'n_train_repeat': 1,
         'eval_render_mode': None,
@@ -20,7 +20,7 @@ base_params = {
         'discount': 0.99,
         'tau': 5e-3,
         'alpha': 1.,
-        'min_alpha': 0.001,
+        'min_alpha': 0.1,
         'auto_alpha': True,
         
         # reward args
@@ -59,7 +59,7 @@ base_params = {
         'actor_lr': 3e-4,
         'adv_lr': 1e-4,
         'rwd_lr': 1e-4,
-        'real_ratio': 0.01,
+        'real_ratio': 0.5,
         'train_adversarial': True,
         'model_rollout_freq': 250,
         'model_retain_epochs': 5,
