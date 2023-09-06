@@ -1,2 +1,1 @@
-rambo run_example examples.development --config examples.config.rirl.mujoco.halfcheetah_medium_expert --seed 0 --gpus 1
-# rambo run_example examples.development --config examples.config.birl.mujoco.halfcheetah_medium_expert --seed 0 --gpus 1
+rambo run_example examples.development --config examples.config.birl.mujoco.halcheetach_medium_expert --seed 0 --gpus 1

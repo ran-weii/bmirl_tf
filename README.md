@@ -1,12 +1,11 @@
-# Robust Adversarial Model-Based Offline Reinforcement Learning (RAMBO)
+# A Bayesian Approach to Robust Inverse Reinforcement Learning
+Code to reproduce the experiments for [A Bayesian Approach to Robust Inverse Reinforcement Learning](https://openreview.net/forum?id=W5SrUCN0yUa).
 
-Code to reproduce the experiments for [RAMBO-RL: Robust Adversarial Model-Based Offline Reinforcement Learning](https://arxiv.org/abs/2204.12581).
-
-Our implementation builds upon the code for [MOPO](https://github.com/tianheyu927/mopo).
+Our implementation builds upon the code for [RAMBO](https://github.com/marc-rigter/rambo).
 
 ## Installation
 1. Install [MuJoCo 2.1.0](https://github.com/deepmind/mujoco/releases) to `~/.mujoco/mujoco210`.
-2. Create a conda environment and install RAMBO.
+2. Create a conda environment and install the code base as `rambo`.
 ```
 cd rambo
 conda env create -f environment/rambo_env.yml
@@ -15,25 +14,33 @@ pip install -e .
 ```
 
 ## Usage
-Configuration files can be found in `examples/config/`. For example, to run the hopper-medium task from the D4RL benchmark, use the following.
+Configuration files can be found in `examples/config/`. Our algorithms proposed in the paper are labeled as: BM-IRL=birl, RM-IRL=rirl. For example, to run BM-IRL on the halfcheetah-medium-expert task from the D4RL benchmark, use the following:
 
 ```
-rambo run_example examples.development --config examples.config.rambo.mujoco.hopper_medium --seed 0 --gpus 1
+rambo run_example examples.development --config examples.config.birl.mujoco.halcheetach_medium_expert --seed 0 --gpus 1
 ```
 
-
-#### Logging
-
-By default, TensorBoard logs are generated in the "logs" directory. The code is also set up to log using Weights and Biases (WandB). To enable the use of WandB, set "log_wandb" to True in the configuration file.
-
-
-## Citing RAMBO
+Alternatively, edit the `.sh` file and run:
 
 ```
-@article{rigter2022rambo,
-  title={RAMBO-RL: Robust Adversarial Model-Based Offline Reinforcement Learning},
-  author={Rigter, Marc and Lacerda, Bruno and Hawes, Nick},
-  journal={Advances in Neural Information Processing Systems},
-  year={2022}
+sh run_example.sh
+```
+
+## Logging
+All logs are saved as `.csv` files in `./logs`.
+
+## Note
+This code base uses tensorflow 1.14, which can be hard to install for new users. 
+
+Paralle to this code base, we have also developed a [Pytorch implementation](https://github.com/rw422scarlet/btom_irl) which is more readable but has not been benchmarked.
+
+## Citation
+```
+@inproceedings{wei2023bayesian,
+  title={A Bayesian Approach to Robust Inverse Reinforcement Learning},
+  author={Wei, Ran and Zeng, Siliang and Li, Chenliang and Garcia, Alfredo and McDonald, Anthony and Hong, Mingyi},
+  booktitle={Conference on Robot Learning},
+  year={2023},
+  organization={PMLR}
 }
 ```
