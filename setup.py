@@ -5,10 +5,10 @@ setup(
     name='rambo',
     packages=find_packages(),
     version='0.0.1',
-    description='Robust Adversarial Model-Based Offline Reinforcement Learning',
+    description='A Bayesian approach to robust inverse reinforcement learning',
     long_description=open('./README.md').read(),
-    author='Marc Rigter',
-    author_email='mrigter@robots.ox.ac.uk',
+    author='Ran Wei',
+    author_email='rw422@tamu.edu',
     entry_points={
         'console_scripts': (
             'rambo=rambo.scripts.console_scripts:main'

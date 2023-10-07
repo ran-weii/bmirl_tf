@@ -32,7 +32,7 @@ All logs are saved as `.csv` files in `./logs`.
 ## Note
 This code base uses tensorflow 1.14, which can be hard to install for new users. 
 
-Paralle to this code base, we have also developed a [Pytorch implementation](https://github.com/rw422scarlet/btom_irl) which is more readable but has not been benchmarked.
+Parallel to this code base, we have also developed a [Pytorch implementation](https://github.com/rw422scarlet/btom_irl) which is more readable but has not been benchmarked.
 
 ## Citation
 ```
